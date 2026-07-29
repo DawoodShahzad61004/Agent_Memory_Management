@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+.eggs/
+*.egg
+*.egg-info
+
+.env
+/.env
+# Virtual environments
+.venv
+/.venv/
+
+# Graphify-specific and claude files
+.graphifyignore
+graphify-out
+CLAUDE.md
+.claude/
+.agents/
+skills-lock.json
+.codex/
+AGENTS.md
+
+chroma_store/
