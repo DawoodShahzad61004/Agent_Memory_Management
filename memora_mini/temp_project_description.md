@@ -18,20 +18,20 @@ structural problems in the memory layer of the parent project (`../RAG-work`, "M
 ## Setup
 
 ```bash
-# From temp_graph/, using the sandbox venv:
-../LangMem/.venv/Scripts/python.exe -m pip install -r memora_mini/requirements.txt
+# From the repo root, using the sandbox venv:
+.venv/Scripts/python.exe -m pip install -r memora_mini/requirements.txt
 
-# Requires CUSTOM_API_BASE / CUSTOM_API_KEY / CUSTOM_API_MODEL_NAME in ../LangMem/.env
+# Requires CUSTOM_API_BASE / CUSTOM_API_KEY / CUSTOM_API_MODEL_NAME in the repo-root .env
 cd memora_mini
-../../LangMem/.venv/Scripts/python.exe demo.py    # scripted end-to-end demo
-../../LangMem/.venv/Scripts/python.exe main.py    # CLI REPL
+../.venv/Scripts/python.exe demo.py    # scripted end-to-end demo
+../.venv/Scripts/python.exe main.py    # CLI REPL
 ```
 
 Tests need no LLM server and no network:
 
 ```bash
-# from temp_graph/
-../LangMem/.venv/Scripts/python.exe -m pytest tests/ -q
+# from the repo root
+.venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
 ### CLI commands
