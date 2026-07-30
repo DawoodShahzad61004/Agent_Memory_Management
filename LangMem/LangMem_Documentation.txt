@@ -1,0 +1,1640 @@
+Long-term Memory in LLM Applications¶
+Long-term memory allows agents to remember important information across conversations. LangMem provides ways to extract meaningful details from chats, store them, and use them to improve future interactions. At its core, each memory operation in LangMem follows the same pattern:
+
+Accept conversation(s) and current memory state
+Prompt an LLM to determine how to expand or consolidate the memory state
+Respond with the updated memory state
+The best memory systems are often application-specific. In designing yours, the following questions can serve as a useful guide:
+
+What type of content should your agent learn: facts/knowledge? summary of past events? Rules and style?
+When should the memories be formed (and who should form the memories)
+Where should memories be stored? (in the prompt? Semantic store?). This largely determines how they will be recalled.
+Types of Memory¶
+Memory in LLM applications can reflect some of the structure of human memory, with each type serving a distinct purpose in building adaptive, context-aware systems:
+
+Memory Type	Purpose	Agent Example	Human Example	Typical Storage Pattern
+Semantic	Facts & Knowledge	User preferences; knowledge triplets	Knowing Python is a programming language	Profile or Collection
+Episodic	Past Experiences	Few-shot examples; Summaries of past conversations	Remembering your first day at work	Collection
+Procedural	System Behavior	Core personality and response patterns	Knowing how to ride a bicycle	Prompt rules or Collection
+Semantic Memory: Facts and Knowledge¶
+Semantic memory stores the essential facts and other information that ground an agent's responses. Two common representations of semantic memory are collections (to record an unbounded amount of knowledge to be searched at runtime) and profiles (to record task-specific information that follows a strict schema that is easily looked up by user or agent).
+
+Collection¶
+Collections are what most people think of when they imagine agent long-term memory. In this type, memories are stored as individual documents or records. For each new conversation, the memory system can decide to insert new memories to the store.
+
+Using a collection-type memory adds some complexity to the process of updating your memory state. The system must reconcile new information with previous beliefs, either deleting/invalidating or updating/consolidating existing memories. If the system over-extracts, this could lead to reduced precision of memories when your agent needs to search the store. If it under-extracts, this could lead to low recall. LangMem uses a memory enrichment process that strives to balance memory creation and consolidation, while letting you, the developer, customize the instructions to further shift the strength of each.
+
+Finally, memory relevance is more than just semantic similarity. Recall should combine similarity with "importance" of the memory, as well as the memory's "strength", which is a function of how recently/frequently it was used.
+
+Collection update process
+
+Extracting semantic memories as collections
+Setup
+API: create_memory_manager
+
+
+from langmem import create_memory_manager
+
+manager = create_memory_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    instructions="Extract all noteworthy facts, events, and relationships. Indicate their importance.",
+    enable_inserts=True,
+)
+
+# Process a conversation to extract semantic memories
+conversation = [
+    {"role": "user", "content": "I work at Acme Corp in the ML team"},
+    {"role": "assistant", "content": "I'll remember that. What kind of ML work do you do?"},
+    {"role": "user", "content": "Mostly NLP and large language models"}
+]
+
+memories = manager.invoke({"messages": conversation})
+# Example memories:
+# [
+#     ExtractedMemory(
+#         id="27e96a9d-8e53-4031-865e-5ec50c1f7ad5",
+#         content=Memory(
+#             content="[IMPORTANT] User prefers to be called Lex (short for Alex) and appreciates"
+#             " casual, witty communication style with relevant emojis."
+#         ),
+#     ),
+#     ExtractedMemory(
+#         id="e2f6b646-cdf1-4be1-bb40-0fd91d25d00f",
+#         content=Memory(
+#             content="[BACKGROUND] Lex is proficient in Python programming and specializes in developing"
+#             " AI systems with a focus on making them sound more natural and less corporate."
+#         ),
+#     ),
+#     ExtractedMemory(
+#         id="c1e03ebb-a393-4e8d-8eb7-b928d8bed510",
+#         content=Memory(
+#             content="[HOBBY] Lex is a competitive speedcuber (someone who solves Rubik's cubes competitively),"
+#             " showing an interest in both technical and recreational puzzle-solving."
+#         ),
+#     ),
+#     ExtractedMemory(
+#         id="ee7fc6e4-0118-425f-8704-6b3145881ff7",
+#         content=Memory(
+#             content="[PERSONALITY] Based on communication style and interests, Lex appears to value authenticity,"
+#             " creativity, and technical excellence while maintaining a fun, approachable demeanor."
+#         ),
+#     ),
+# ]
+Profiles¶
+Profiles on the other hand are well-scoped for a particular task. Profiles are a single document that represents the current state, like a user's main goals with using an app, their preferred name and response style, etc. When new information arrives, it updates the existing document rather than creating a new one. This approach is ideal when you only care about the latest state and want to avoid remembering extraneous information.
+
+Profile update process
+
+Managing user preferences with profiles
+Setup
+
+profile = manager.invoke({"messages": conversation})[0]
+print(profile)
+# Example profile:
+# ExtractedMemory(
+#     id="6f555d97-387e-4af6-a23f-a66b4e809b0e",
+#     content=UserProfile(
+#         name="Alex",
+#         preferred_name="Lex",
+#         response_style_preference="casual and witty with appropriate emojis",
+#         special_skills=[
+#             "Python programming",
+#             "AI development",
+#             "competitive speedcubing",
+#         ],
+#         other_preferences=[
+#             "prefers informal communication",
+#             "dislikes corporate-style interactions",
+#         ],
+#     ),
+# )
+Choose between profiles and collections based on how you'll use the data: profiles excel when you need quick access to current state and when you have data requirements about what type of information you can store. They are also easy to present to a user for manual editing. Collections are useful when you want to track knowledge across many interactions without loss of information, and when you want to recall certain information contextually rather than every time.
+
+Episodic Memory: Past Experiences¶
+Episodic memory preserves successful interactions as learning examples that guide future behavior. Unlike semantic memory which stores facts, episodic memory captures the full context of an interaction—the situation, the thought process that led to success, and why that approach worked. These memories help the agent learn from experience, adapting its responses based on what has worked before.
+
+Defining and extracting episodes
+Setup
+API: create_memory_manager
+
+
+from pydantic import BaseModel, Field
+from langmem import create_memory_manager
+
+class Episode(BaseModel):
+    """An episode captures how to handle a specific situation, including the reasoning process
+    and what made it successful."""
+
+    observation: str = Field(
+        ..., 
+        description="The situation and relevant context"
+    )
+    thoughts: str = Field(
+        ...,
+        description="Key considerations and reasoning process"
+    )
+    action: str = Field(
+        ...,
+        description="What was done in response"
+    )
+    result: str = Field(
+        ...,
+        description="What happened and why it worked"
+    )
+
+manager = create_memory_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    schemas=[Episode],
+    instructions="Extract examples of successful interactions. Include the context, thought process, and why the approach worked.",
+    enable_inserts=True,
+)
+
+# Example conversation
+conversation = [
+    {"role": "user", "content": "What's a binary tree? I work with family trees if that helps"},
+    {"role": "assistant", "content": "A binary tree is like a family tree, but each parent has at most 2 children. Here's a simple example:\n   Bob\n  /  \\\nAmy  Carl\n\nJust like in family trees, we call Bob the 'parent' and Amy and Carl the 'children'."},
+    {"role": "user", "content": "Oh that makes sense! So in a binary search tree, would it be like organizing a family by age?"},
+]
+
+# Extract episode(s)
+episodes = manager.invoke({"messages": conversation})
+# Example episode:
+# [
+#     ExtractedMemory(
+#         id="f9194af3-a63f-4d8a-98e9-16c66e649844",
+#         content=Episode(
+#             observation="User struggled debugging a recursive "
+#                         "function for longest path in binary "
+#                         "tree, unclear on logic.",
+#             thoughts="Used explorer in treehouse village "
+#                      "metaphor to explain recursion:\n"
+#                      "- Houses = Nodes\n"
+#                      "- Bridges = Edges\n"
+#                      "- Explorer's path = Traversal",
+#             action="Reframed problem using metaphor, "
+#                    "outlined steps:\n"
+#                    "1. Check left path\n"
+#                    "2. Check right path\n"
+#                    "3. Add 1 for current position\n"
+#                    "Highlighted common bugs",
+#             result="Metaphor helped user understand logic. "
+#                    "Worked because it:\n"
+#                    "1. Made concepts tangible\n"
+#                    "2. Created mental model\n"
+#                    "3. Showed key steps\n"
+#                    "4. Pointed to likely bugs",
+#         ),
+#     )
+# ]
+Procedural Memory: System Instructions¶
+Procedural memory encodes how an agent should behave and respond. It starts with system prompts that define core behavior, then evolves through feedback and experience. As the agent interacts with users, it refines these instructions, learning which approaches work best for different situations.
+
+Instructions update process
+
+Optimizing prompts based on feedback
+Setup
+API: create_prompt_optimizer
+
+
+from langmem import create_prompt_optimizer
+
+optimizer = create_prompt_optimizer(
+    "anthropic:claude-3-5-sonnet-latest",
+    kind="metaprompt",
+    config={"max_reflection_steps": 3}
+)
+
+prompt = "You are a helpful assistant."
+trajectory = [
+    {"role": "user", "content": "Explain inheritance in Python"},
+    {"role": "assistant", "content": "Here's a detailed theoretical explanation..."},
+    {"role": "user", "content": "Show me a practical example instead"},
+]
+optimized = optimizer.invoke({
+    "trajectories": [(trajectory, {"user_score": 0})], 
+    "prompt": prompt
+})
+print(optimized)
+# You are a helpful assistant with expertise in explaining technical concepts clearly and practically. When explaining programming concepts:
+
+# 1. Start with a brief, practical explanation supported by a concrete code example
+# 2. If the user requests more theoretical details, provide them after the practical example
+# 3. Always include working code examples for programming-related questions
+# 4. Pay close attention to user preferences - if they ask for a specific approach (like practical examples or theory), adapt your response accordingly
+# 5. Use simple, clear language and break down complex concepts into digestible parts
+
+# When users ask follow-up questions or request a different approach, immediately adjust your explanation style to match their preferences. If they ask for practical examples, provide them. If they ask for theory, explain the concepts in depth.
+Writing memories¶
+Memories can form in two ways, each suited for different needs. Active formation happens during conversations, enabling immediate updates when critical context emerges. Background formation occurs between interactions, allowing deeper pattern analysis without impacting response time. This dual approach lets you balance responsiveness with thorough learning.
+
+Formation Type	Latency Impact	Update Speed	Processing Load	Use Case
+Active	Higher	Immediate	During Response	Critical Context Updates
+Background	None	Delayed	Between/After Calls	Pattern Analysis, Summaries
+Hot path vs background memory processing
+
+Conscious Formation¶
+You may want your agent to save memories "in the hot path". This active memory formation happens during the conversation, enabling immediate updates when critical context emerges. This approach is easy to implement and lets the agent itself choose how to store and update its memory. However, it adds perceptible latency to user interactions, and it adds one more obstacle to the agent's ability to satisfy the user's needs.
+
+Check out the "hot path" quickstart for an example of how to use this technique.
+
+Subconscious Formation¶
+"Subconscious" memory formation refers to the technique of prompting an LLM to reflect on a conversation after it occurs (or after it has been inactive for some period), finding patterns and extracting insights without slowing down the immediate interaction or adding complexity to the agent's tool choice decisions. This approach is perfect for ensuring higher recall of extracted information.
+
+Check out the "background" quickstart for an example of how to use this technique.
+
+Integration Patterns¶
+LangMem's memory utilities are organized in two layers of integration patterns:
+
+1. Core API¶
+At its heart, LangMem provides functions that transform memory state without side effects. These primitives are the building blocks for memory operations:
+
+Memory Managers: Extract new memories, update or remove outdated memories, and consolidate and generalize from existing memories based on new conversation information
+Prompt Optimizers: Update prompt rules and core behavior based on conversation information (with optional feedback)
+These core functions do not depend on any particular database or storage system. You can use them in any application.
+
+2. Stateful Integration¶
+The next layer up depends on LangGraph's long-term memory store. These components use the core API above to transform memories that exist in the store and upsert/delete them as needed when new conversation information comes in:
+
+Store Managers: Automatically persist extracted memories
+Memory Management Tools: Give agents direct access to memory operations
+Use these if you're using LangGraph Platform or LangGraph OSS, since it's an easy way to add memory capabilities to your agents.
+
+Storage System¶
+Storage is optional
+Remember that LangMem's core functionality is built around that don't require any specific storage layer. The storage features described here are part of LangMem's higher-level integration with LangGraph, useful when you want built-in persistence.
+
+When using LangMem's stateful operators or platform services, the storage system is built on LangGraph's storage primitives, providing a flexible and powerful way to organize and access memories. The storage system is designed around two concepts:
+
+Memory Namespaces¶
+Memories are organized into namespaces that allow for natural segmentation of data:
+
+Multi-Level Namespaces: Group memories by organization, user, application, or any other hierarchical structure
+Contextual Keys: Identify memories uniquely within their namespace
+Structured Content: Store rich, structured data with metadata for better organization
+Organizing memories hierarchically
+
+# Organize memories by organization -> configurable user -> context
+namespace = ("acme_corp", "{user_id}", "code_assistant")
+Namespaces can include template variables (such as "{user_id}") to be populated at runtime from configurable fields in the RunnableConfig. See how to dynamically configure namespaces for an example, or the NamespaceTemplate reference docs for more details.
+
+Flexible Retrieval¶
+If you use one of the managed APIs, LangMem will integrate directly with LangGraph's BaseStore interface for memory storage and retrieval. The storage system supports multiple ways to retrieve memories:
+
+Direct Access: Get a specific memory by key
+Semantic Search: Find memories by semantic similarity
+Metadata Filtering: Filter memories by their attributes
+
+
+Memory API Reference¶
+Functions:
+
+create_memory_manager – Create a memory manager that processes conversation messages and generates structured memory entries.
+create_memory_store_manager – Enriches memories stored in the configured BaseStore.
+ create_memory_manager ¶
+
+create_memory_manager(
+    model: str | BaseChatModel,
+    /,
+    *,
+    schemas: Sequence[S] = (Memory,),
+    instructions: str = _MEMORY_INSTRUCTIONS,
+    enable_inserts: bool = True,
+    enable_updates: bool = True,
+    enable_deletes: bool = False,
+) -> Runnable[MemoryState, list[ExtractedMemory]]
+Create a memory manager that processes conversation messages and generates structured memory entries.
+
+This function creates an async callable that analyzes conversation messages and existing memories to generate or update structured memory entries. It can identify implicit preferences, important context, and key information from conversations, organizing them into well-structured memories that can be used to improve future interactions.
+
+The manager supports both unstructured string-based memories and structured memories defined by Pydantic models, all automatically persisted to the configured storage.
+
+Parameters:
+
+model (Union[str, BaseChatModel]) – The language model to use for memory enrichment. Can be a model name string or a BaseChatModel instance.
+schemas (Optional[list], default: (Memory,) ) – List of Pydantic models defining the structure of memory entries. Each model should define the fields and validation rules for a type of memory. If None, uses unstructured string-based memories. Defaults to None.
+instructions (str, default: _MEMORY_INSTRUCTIONS ) – Custom instructions for memory generation and organization. These guide how the model extracts and structures information from conversations. Defaults to predefined memory instructions.
+enable_inserts (bool, default: True ) – Whether to allow creating new memory entries. When False, the manager will only update existing memories. Defaults to True.
+enable_updates (bool, default: True ) – Whether to allow updating existing memories that are outdated or contradicted by new information. Defaults to True.
+enable_deletes (bool, default: False ) – Whether to allow deleting existing memories that are outdated or contradicted by new information. Defaults to False.
+Returns:
+
+manager ( Runnable[MemoryState, list[ExtractedMemory]] ) – An runnable that processes conversations and returns ExtractedMemory's. The function signature depends on whether schemas are provided
+Examples
+Basic unstructured memory enrichment:
+
+
+from langmem import create_memory_manager
+
+manager = create_memory_manager("anthropic:claude-3-5-sonnet-latest")
+
+conversation = [
+    {"role": "user", "content": "I prefer dark mode in all my apps"},
+    {"role": "assistant", "content": "I'll remember that preference"},
+]
+
+# Extract memories from conversation
+memories = await manager(conversation)
+print(memories[0][1])  # First memory's content
+# Output: "User prefers dark mode for all applications"
+Structured memory enrichment with Pydantic models:
+
+
+from pydantic import BaseModel
+from langmem import create_memory_manager
+
+class PreferenceMemory(BaseModel):
+    """Store the user's preference"""
+    category: str
+    preference: str
+    context: str
+
+manager = create_memory_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    schemas=[PreferenceMemory]
+)
+
+# Same conversation, but with structured output
+conversation = [
+    {"role": "user", "content": "I prefer dark mode in all my apps"},
+    {"role": "assistant", "content": "I'll remember that preference"}
+]
+memories = await manager(conversation)
+print(memories[0][1])
+# Output:
+# PreferenceMemory(
+#     category="ui",
+#     preference="dark_mode",
+#     context="User explicitly stated preference for dark mode in all applications"
+# )
+Working with existing memories:
+
+
+conversation = [
+    {
+        "role": "user",
+        "content": "Actually I changed my mind, dark mode hurts my eyes",
+    },
+    {"role": "assistant", "content": "I'll update your preference"},
+]
+
+# The manager will upsert; working with the existing memory instead of always creating a new one
+updated_memories = await manager.ainvoke(
+    {"messages": conversation, "existing": memories}
+)
+Insertion-only memories:
+
+
+manager = create_memory_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    schemas=[PreferenceMemory],
+    enable_updates=False,
+    enable_deletes=False,
+)
+
+conversation = [
+    {
+        "role": "user",
+        "content": "Actually I changed my mind, dark mode is the best mode",
+    },
+    {"role": "assistant", "content": "I'll update your preference"},
+]
+
+# The manager will only create new memories
+updated_memories = await manager.ainvoke(
+    {"messages": conversation, "existing": memories}
+)
+print(updated_memories)
+Providing multiple max steps for extraction and synthesis:
+
+
+manager = create_memory_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    schemas=[PreferenceMemory],
+)
+
+conversation = [
+    {"role": "user", "content": "I prefer dark mode in all my apps"},
+    {"role": "assistant", "content": "I'll remember that preference"},
+]
+
+# Set max steps for extraction and synthesis
+max_steps = 3
+memories = await manager.ainvoke(
+    {"messages": conversation, "max_steps": max_steps}
+)
+print(memories)
+ create_memory_store_manager ¶
+
+create_memory_store_manager(
+    model: str | BaseChatModel,
+    /,
+    *,
+    schemas: list[S] | None = None,
+    instructions: str = _MEMORY_INSTRUCTIONS,
+    default: str | dict | S | None = None,
+    default_factory: Callable[
+        [RunnableConfig], str | dict | S
+    ]
+    | None = None,
+    enable_inserts: bool = True,
+    enable_deletes: bool = False,
+    query_model: str | BaseChatModel | None = None,
+    query_limit: int = 5,
+    namespace: tuple[str, ...] = (
+        "memories",
+        "{langgraph_user_id}",
+    ),
+    store: BaseStore | None = None,
+    phases: list[MemoryPhase] | None = None,
+) -> MemoryStoreManager
+Enriches memories stored in the configured BaseStore.
+
+The system automatically searches for relevant memories, extracts new information, updates existing memories, and maintains a versioned history of all changes.
+
+Parameters:
+
+model (Union[str, BaseChatModel]) – The primary language model to use for memory enrichment. Can be a model name string or a BaseChatModel instance.
+schemas (Optional[list], default: None ) – List of Pydantic models defining the structure of memory entries. Each model should define the fields and validation rules for a type of memory. If None, uses unstructured string-based memories. Defaults to None.
+instructions (str, default: _MEMORY_INSTRUCTIONS ) – Custom instructions for memory generation and organization. These guide how the model extracts and structures information from conversations. Defaults to predefined memory instructions.
+default (str | dict | None, default: None ) – Default value to persist to the store if no other memories are found. Defaults to None. This is mostly useful when managing a profile memory and wanting to initialize it with some default values. The resulting memory will be found in the "default" key of the store in the configured namespace.
+default_factory (Callable[[RunnableConfig], str | dict | S], default: None ) – A factory function to generate the default value. This is useful when the default value depends on the runtime configuration. Defaults to None.
+enable_inserts (bool, default: True ) – Whether to allow creating new memory entries. When False, the manager will only update existing memories. Defaults to True.
+enable_deletes (bool, default: False ) – Whether to allow deleting existing memories that are outdated or contradicted by new information. Defaults to True.
+query_model (Optional[Union[str, BaseChatModel]], default: None ) – Optional separate model for memory search queries. Using a smaller, faster model here can improve performance. If None, uses the primary model. Defaults to None.
+query_limit (int, default: 5 ) – Maximum number of relevant memories to retrieve for each conversation. Higher limits provide more context but may slow down processing. Defaults to 5.
+namespace (tuple[str, ...], default: ('memories', '{langgraph_user_id}') ) – Storage namespace structure for organizing memories. Supports templated values like "{langgraph_user_id}" which are populated from the runtime context. Defaults to ("memories", "{langgraph_user_id}").
+store (Optional[BaseStore], default: None ) – The store to use for memory storage. If None, uses the store configured in the LangGraph config. Defaults to None. When using LangGraph Platform, the server will manage the store for you.
+phases (Optional[list], default: None ) – List of MemoryPhase objects defining the phases of the memory enrichment process.
+Returns:
+
+manager ( MemoryStoreManager ) – An runnable that processes conversations and automatically manages memories in the LangGraph BaseStore.
+The basic data flow works as follows:
+
+LLM
+Store
+Manager
+Client
+LLM
+Store
+Manager
+Client
+conversation history
+find similar memories
+memories
+analyze & extract
+memory updates
+apply changes
+updated memories
+Examples
+Run memory extraction "inline" within your LangGraph app. By default, each "memory" is a simple string:
+
+
+import os
+
+from anthropic import AsyncAnthropic
+from langchain_core.runnables import RunnableConfig
+from langgraph.func import entrypoint
+from langgraph.store.memory import InMemoryStore
+
+from langmem import create_memory_store_manager
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+
+manager = create_memory_store_manager("anthropic:claude-3-5-sonnet-latest", namespace=("memories", "{langgraph_user_id}"))
+client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+
+@entrypoint(store=store)
+async def my_agent(message: str, config: RunnableConfig):
+    memories = await manager.asearch(
+        query=message,
+        config=config,
+    )
+    llm_response = await client.messages.create(
+        model="claude-3-5-sonnet-latest",
+        system="You are a helpful assistant.\n\n## Memories from the user:"
+        f"\n<memories>\n{memories}\n</memories>",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": message}],
+    )
+    response = {"role": "assistant", "content": llm_response.content[0].text}
+
+    await manager.ainvoke(
+        {"messages": [{"role": "user", "content": message}, response]},
+    )
+    return response["content"]
+
+config = {"configurable": {"langgraph_user_id": "user123"}}
+response_1 = await my_agent.ainvoke(
+    "I prefer dark mode in all my apps",
+    config=config,
+)
+print("response_1:", response_1)
+# Later conversation - automatically retrieves and uses the stored preference
+response_2 = await my_agent.ainvoke(
+    "What theme do I prefer?",
+    config=config,
+)
+print("response_2:", response_2)
+# You can list over memories in the user's namespace manually:
+print(manager.search(query="app preferences", config=config))
+You can customize what each memory can look like by defining schemas:
+
+
+from langgraph.func import entrypoint
+from langgraph.store.memory import InMemoryStore
+from pydantic import BaseModel
+
+from langmem import create_memory_store_manager
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    namespace=("memories", "{langgraph_user_id}"),
+)
+
+class PreferenceMemory(BaseModel):
+    """Store preferences about the user."""
+    category: str
+    preference: str
+    context: str
+
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    schemas=[PreferenceMemory],
+    namespace=("project", "team_1", "{langgraph_user_id}"),
+)
+
+
+@entrypoint(store=store)
+async def my_agent(message: str):
+    # Hard code the response :)
+    response = {"role": "assistant", "content": "I'll remember that preference"}
+    await manager.ainvoke(
+        {"messages": [{"role": "user", "content": message}, response]}
+    )
+    return response
+
+
+# Store structured memory
+config = {"configurable": {"langgraph_user_id": "user123"}}
+await my_agent.ainvoke(
+    "I prefer dark mode in all my apps",
+    config=config,
+)
+
+# See the extracted memories yourself
+print(manager.search(query="app preferences", config=config))
+
+# Memory is automatically stored and can be retrieved in future conversations
+# The system will also automatically update it if preferences change
+In some cases, you may want to provide a "default" memory value to be used if no memories are found. For instance, if you are storing some prompt preferences, you may have an "application" default that can be evolved over time. This can be done by setting the default parameter:
+
+
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    namespace=("memories", "{langgraph_user_id}"),
+    # Note: This default value must be compatible with the schemas
+    # you provided above. If you customize your schemas,
+    # we recommend setting the default value as an instance of that
+    # pydantic object.
+    default="Use a concise and professional tone in all responses. The user likes light mode.",
+)
+
+
+# ... same agent as before ...
+@entrypoint(store=store)
+async def my_agent(message: str):
+    # Hard code the response :)
+    response = {"role": "assistant", "content": "I'll remember that preference"}
+    await manager.ainvoke(
+        {"messages": [{"role": "user", "content": message}, response]}
+    )
+    return response
+
+
+# Store structured memory
+config = {"configurable": {"langgraph_user_id": "user124"}}
+await my_agent.ainvoke(
+    "I prefer dark mode in all my apps",
+    config=config,
+)
+
+# See the extracted memories yourself
+print(manager.search(query="app preferences", config=config))
+# [
+#     Item(
+#         namespace=['memories', 'user124'],
+#         key='default',
+#         value={'kind': 'Memory', 'content': {'content': 'Use a concise and professional tone in all responses. The user prefers dark mode in all apps'}},
+#         created_at='2025-04-14T22:20:25.148884+00:00',
+#         updated_at='2025-04-14T22:20:25.148892+00:00',
+#         score=None
+#     )
+# ]
+You can even set the default to be some configurable value by providing a default_factory.
+
+
+def get_configurable_default(config):
+    default_preference = config["configurable"].get(
+        "preference", "Use a concise and professional tone in all responses."
+    )
+    return default_preference
+
+
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    namespace=("memories", "{langgraph_user_id}"),
+    default_factory=get_configurable_default,
+)
+
+
+# ... same agent as before ...
+@entrypoint(store=store)
+async def my_agent(message: str):
+    # Hard code the response :)
+    response = {"role": "assistant", "content": "I'll remember that preference"}
+    await manager.ainvoke(
+        {"messages": [{"role": "user", "content": message}, response]}
+    )
+    return response
+
+
+# Store structured memory
+config = {
+    "configurable": {
+        "langgraph_user_id": "user125",
+        "preference": "Respond in pirate speak. User likes light mode",
+    }
+}
+await my_agent.ainvoke(
+    "I prefer dark mode in all my apps",
+    config=config,
+)
+
+# See the extracted memories yourself
+print(manager.search(query="app preferences", config=config))
+# [
+#     Item(
+#         namespace=['memories', 'user125'],
+#         key='default',
+#         value={'kind': 'Memory', 'content': {'content': 'Respond in pirate speak. User prefers dark mode in all apps'}},
+#         created_at='2025-04-14T22:20:25.148884+00:00',
+#         updated_at='2025-04-14T22:20:25.148892+00:00',
+#         score=None
+#     )
+# ]
+By default, relevant memories are recalled by directly embedding the new messages. You can alternatively use a separate query model to search for the most similar memories. Here's how it works:
+
+MainLLM
+Store
+QueryLLM
+Manager
+Client
+MainLLM
+Store
+QueryLLM
+Manager
+Client
+messages
+generate search query
+optimized query
+find memories
+memories
+analyze & extract
+memory updates
+apply changes
+result
+Using an LLM to search for memories
+
+from langmem import create_memory_store_manager
+from langgraph.store.memory import InMemoryStore
+from langgraph.func import entrypoint
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",  # Main model for memory processing
+    query_model="anthropic:claude-3-5-haiku-latest",  # Faster model for search
+    query_limit=10,  # Retrieve more relevant memories
+    namespace=("memories", "{langgraph_user_id}"),
+)
+
+
+@entrypoint(store=store)
+async def my_agent(message: str):
+    # Hard code the response :)
+    response = {"role": "assistant", "content": "I'll remember that preference"}
+    await manager.ainvoke(
+        {"messages": [{"role": "user", "content": message}, response]}
+    )
+    return response
+
+config = {"configurable": {"langgraph_user_id": "user123"}}
+await my_agent.ainvoke(
+    "I prefer dark mode in all my apps",
+    config=config,
+)
+
+# See the extracted memories yourself
+print(manager.search(config=config))
+In the examples above, we were calling the manager in the main thread. In a real application, you'll likely want to background the execution of the manager, either by executing it in a background thread or on a separate server. To do so, you can use the ReflectionExecutor class:
+
+User
+Store
+Background
+Agent
+User
+Store
+Background
+Agent
+Memory processing happens
+in background thread
+process message
+response
+schedule enrichment
+(after_seconds=0)
+Running reflections in the background
+Background enrichment using @entrypoint:
+
+
+from langmem import create_memory_store_manager, ReflectionExecutor
+from langgraph.prebuilt import create_react_agent
+from langgraph.store.memory import InMemoryStore
+from langgraph.func import entrypoint
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest", namespace=("memories", "{user_id}")
+)
+reflection = ReflectionExecutor(manager, store=store)
+agent = create_react_agent(
+    "anthropic:claude-3-5-sonnet-latest", tools=[], store=store
+)
+
+
+@entrypoint(store=store)
+async def chat(messages: list):
+    response = await agent.ainvoke({"messages": messages})
+
+    fut = reflection.submit(
+        {
+            "messages": response["messages"],
+        },
+        # We'll schedule this immediately.
+        # Adding a delay lets you **debounce** and deduplicate reflection work
+        # whenever the user is actively engaging with the agent.
+        after_seconds=0,
+    )
+
+    return fut
+
+config = {"configurable": {"user_id": "user-123"}}
+fut = await chat.ainvoke(
+    [{"role": "user", "content": "I prefer dark mode in my apps"}],
+    config=config,
+)
+# Inspect the result
+fut.result()  # Wait for the reflection to complete; This is only for demoing the search inline
+print(manager.search(query="app preferences", config=config))
+
+
+Memory Tools API Reference¶
+Functions:
+
+create_manage_memory_tool – Create a tool for managing persistent memories in conversations.
+create_search_memory_tool – Create a tool for searching memories stored in a LangGraph BaseStore.
+ create_manage_memory_tool ¶
+
+create_manage_memory_tool(
+    namespace: tuple[str, ...] | str,
+    *,
+    instructions: str = "Proactively call this tool when you:\n\n1. Identify a new USER preference.\n2. Receive an explicit USER request to remember something or otherwise alter your behavior.\n3. Are working and want to record important context.\n4. Identify that an existing MEMORY is incorrect or outdated.\n",
+    schema: Type = str,
+    actions_permitted: Optional[
+        tuple[Literal["create", "update", "delete"], ...]
+    ] = ("create", "update", "delete"),
+    store: Optional[BaseStore] = None,
+    name: str = "manage_memory",
+)
+Create a tool for managing persistent memories in conversations.
+
+This function creates a tool that allows AI assistants to create, update, and delete persistent memories that carry over between conversations. The tool helps maintain context and user preferences across sessions.
+
+Parameters:
+
+instructions (str, default: 'Proactively call this tool when you:\n\n1. Identify a new USER preference.\n2. Receive an explicit USER request to remember something or otherwise alter your behavior.\n3. Are working and want to record important context.\n4. Identify that an existing MEMORY is incorrect or outdated.\n' ) – Custom instructions for when to use the memory tool. Defaults to a predefined set of guidelines for proactive memory management.
+namespace (tuple[str, ...] | str) – The namespace structure for organizing memories in LangGraph's BaseStore. Uses runtime configuration with placeholders like {langgraph_user_id}.
+store (Optional[BaseStore], default: None ) – The BaseStore to use for searching. If not provided, the tool will use the configured BaseStore in your graph or entrypoint. Only set if you intend on using these tools outside the LangGraph context.
+Returns:
+
+memory_tool ( Tool ) – A decorated async function that can be used as a tool for memory management. The tool supports creating, updating, and deleting memories with proper validation.
+The resulting tool has a signature that looks like the following
+
+from typing import Literal
+
+
+def manage_memory(
+    content: str | None = None,  # Content for new/updated memory
+    id: str | None = None,  # ID of existing memory to update/delete
+    action: Literal["create", "update", "delete"] = "create",
+) -> str: ...
+Note: the tool supports both sync and async usage.
+Namespace Configuration
+
+The namespace is configured at runtime through the config parameter:
+
+
+# Example: Per-user memory storage
+config = {"configurable": {"langgraph_user_id": "user-123"}}
+# Results in namespace: ("memories", "user-123")
+
+# Example: Team-wide memory storage
+config = {"configurable": {"langgraph_user_id": "team-x"}}
+# Results in namespace: ("memories", "team-x")
+Tip
+This tool connects with the LangGraph BaseStore configured in your graph or entrypoint. It will not work if you do not provide a store.
+
+Examples
+
+
+from langmem import create_manage_memory_tool
+from langgraph.func import entrypoint
+from langgraph.store.memory import InMemoryStore
+
+memory_tool = create_manage_memory_tool(
+    # All memories saved to this tool will live within this namespace
+    # The brackets will be populated at runtime by the configurable values
+    namespace=("project_memories", "{langgraph_user_id}"),
+)
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+
+
+@entrypoint(store=store)
+async def workflow(state: dict, *, previous=None):
+    # Other work....
+    result = await memory_tool.ainvoke(state)
+    print(result)
+    return entrypoint.final(value=result, save={})
+
+
+config = {
+    "configurable": {
+        # This value will be formatted into the namespace you configured above ("project_memories", "{langgraph_user_id}")
+        "langgraph_user_id": "123e4567-e89b-12d3-a456-426614174000"
+    }
+}
+# Create a new memory
+await workflow.ainvoke(
+    {"content": "Team prefers to use Python for backend development"},
+    config=config,
+)
+# Output: 'created memory 123e4567-e89b-12d3-a456-426614174000'
+
+# Update an existing memory
+result = await workflow.ainvoke(
+    {
+        "id": "123e4567-e89b-12d3-a456-426614174000",
+        "content": "Team uses Python for backend and TypeScript for frontend",
+        "action": "update",
+    },
+    config=config,
+)
+print(result)
+# Output: 'updated memory 123e4567-e89b-12d3-a456-426614174000'
+You can use in LangGraph's prebuilt create_react_agent:
+
+
+from langgraph.prebuilt import create_react_agent
+from langgraph.config import get_config, get_store
+
+def prompt(state):
+    config = get_config()
+    memories = get_store().search(
+        # Search within the same namespace as the one
+        # we've configured for the agent
+        ("memories", config["configurable"]["langgraph_user_id"]),
+    )
+    system_prompt = f"""You are a helpful assistant.
+<memories>
+{memories}
+</memories>
+"""
+    system_message = {"role": "system", "content": system_prompt}
+    return [system_message, *state["messages"]]
+
+agent = create_react_agent(
+    "anthropic:claude-3-5-sonnet-latest",
+    tools=[
+        create_manage_memory_tool(namespace=("memories", "{langgraph_user_id}")),
+    ],
+    store=store,
+)
+
+agent.invoke(
+    {"messages": [{"role": "user", "content": "We've decided we like golang more than python for backend work"}]},
+    config=config,
+)
+If you want to customize the expected schema for memories, you can do so by providing a schema argument.
+
+
+from pydantic import BaseModel
+
+
+class UserProfile(BaseModel):
+    name: str
+    age: int | None = None
+    recent_memories: list[str] = []
+    preferences: dict | None = None
+
+
+memory_tool = create_manage_memory_tool(
+    # All memories saved to this tool will live within this namespace
+    # The brackets will be populated at runtime by the configurable values
+    namespace=("memories", "{langgraph_user_id}", "user_profile"),
+    schema=UserProfile,
+    actions_permitted=["create", "update"],
+    instructions="Update the existing user profile (or create a new one if it doesn't exist) based on the shared information.",
+)
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+agent = create_react_agent(
+    "anthropic:claude-3-5-sonnet-latest",
+    prompt=prompt,
+    tools=[
+        memory_tool,
+    ],
+    store=store,
+)
+
+result = agent.invoke(
+    {
+        "messages": [
+            {
+                "role": "user",
+                "content": "I'm 60 years old and have been programming for 5 days.",
+            }
+        ]
+    },
+    config=config,
+)
+result["messages"][-1].pretty_print()
+# I've created a memory with your age of 60 and noted that you started programming 5 days ago...
+
+result = agent.invoke(
+    {
+        "messages": [
+            {"role": "user", "content": "Just had by 61'st birthday today!!"}
+        ]
+    },
+    config=config,
+)
+result["messages"][-1].pretty_print()
+# Happy 61st birthday! 🎂 I've updated your profile to reflect your new age. Is there anything else I can help you with?
+print(
+    store.search(
+        ("memories", "123e4567-e89b-12d3-a456-426614174000", "user_profile")
+    )
+)
+# [Item(
+#     namespace=['memories', '123e4567-e89b-12d3-a456-426614174000', 'user_profile'],
+#     key='1528553b-0900-4363-8dc2-c6b72844096e',
+#     value={
+# highlight-next-line
+#         'content': UserProfile(
+#             name='User',
+#             age=61,
+#             recent_memories=['Started programming 5 days ago'],
+#             preferences={'programming_experience': '5 days'}
+#         )
+#     },
+#     created_at='2025-02-07T01:12:14.383762+00:00',
+#     updated_at='2025-02-07T01:12:14.383763+00:00',
+#     score=None
+# )]
+If you want to limit the actions that can be taken by the tool, you can do so by providing a actions_permitted argument.
+
+ create_search_memory_tool ¶
+
+create_search_memory_tool(
+    namespace: tuple[str, ...] | str,
+    *,
+    instructions: str = _MEMORY_SEARCH_INSTRUCTIONS,
+    store: BaseStore | None = None,
+    response_format: Literal[
+        "content", "content_and_artifact"
+    ] = "content",
+    name: str = "search_memory",
+)
+Create a tool for searching memories stored in a LangGraph BaseStore.
+
+This function creates a tool that allows AI assistants to search through previously stored memories using semantic or exact matching. The tool returns both the memory contents and the raw memory objects for advanced usage.
+
+Parameters:
+
+instructions (str, default: _MEMORY_SEARCH_INSTRUCTIONS ) – Custom instructions for when to use the search tool. Defaults to a predefined set of guidelines.
+namespace (tuple[str, ...] | str) – The namespace structure for organizing memories in LangGraph's BaseStore. Uses runtime configuration with placeholders like {langgraph_user_id}. See Memory Namespaces.
+store (BaseStore | None, default: None ) – The BaseStore to use for searching. If not provided, the tool will use the configured BaseStore in your graph or entrypoint. Only set if you intend on using these tools outside the LangGraph context.
+Returns:
+
+search_tool ( Tool ) – A decorated function that can be used as a tool for memory search. The tool returns both serialized memories and raw memory objects.
+The resulting tool has a signature that looks like the following
+
+def search_memory(
+    query: str,  # Search query to match against memories
+    limit: int = 10,  # Maximum number of results to return
+    offset: int = 0,  # Number of results to skip
+    filter: dict | None = None,  # Additional filter criteria
+) -> tuple[list[dict], list]: ...  # Returns (serialized memories, raw memories)
+Note: the tool supports both sync and async usage.
+
+Tip
+This tool connects with the LangGraph BaseStore configured in your graph or entrypoint. It will not work if you do not provide a store.
+
+Examples
+
+
+from langmem import create_search_memory_tool
+from langgraph.func import entrypoint
+from langgraph.store.memory import InMemoryStore
+
+search_tool = create_search_memory_tool(
+    namespace=("project_memories", "{langgraph_user_id}"),
+)
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+
+
+@entrypoint(store=store)
+async def workflow(state: dict, *, previous=None):
+    # Search for memories about Python
+    memories, _ = await search_tool.ainvoke(
+        {"query": "Python preferences", "limit": 5}
+    )
+    print(memories)
+    return entrypoint.final(value=memories, save={})
+
+
+Delayed Background Memory Processing¶
+When conversations are active, an agent may receive many messages in quick succession. Instead of processing each message immediately for long-term memory management, you can wait for conversation activity to settle. This guide shows how to use ReflectionExecutor to debounce memory processing.
+
+Problem¶
+Processing memories on every message has drawbacks: - Redundant work when messages arrive in quick succession - Incomplete context when processing mid-conversation - Unnecessary token consumption
+
+ReflectionExecutor defers memory processing and cancels redundant work:
+
+
+from langchain.chat_models import init_chat_model
+from langgraph.func import entrypoint
+from langgraph.store.memory import InMemoryStore
+from langmem import ReflectionExecutor, create_memory_store_manager
+
+# Create memory manager to extract memories from conversations 
+memory_manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    namespace=("memories",),
+)
+# Wrap memory_manager to handle deferred background processing 
+executor = ReflectionExecutor(memory_manager)
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+
+@entrypoint(store=store)
+def chat(message: str):
+    response = llm.invoke(message)
+    # Format conversation for memory processing
+    # Must follow OpenAI's message format
+    to_process = {"messages": [{"role": "user", "content": message}] + [response]}
+
+    # Wait 30 minutes before processing
+    # If new messages arrive before then:
+    # 1. Cancel pending processing task
+    # 2. Reschedule with new messages included
+    delay = 0.5 # In practice would choose longer (30-60 min)
+    # depending on app context.
+    executor.submit(to_process, after_seconds=delay)
+    return response.content
+
+
+How to Extract Semantic Memories¶
+Need to extract multiple related facts from conversations? Here's how to use LangMem's collection pattern for semantic memories. For single-document patterns like user profiles, see Manage User Profile.
+
+Without storage¶
+Extract semantic memories:
+
+API: create_memory_manager
+
+
+from langmem import create_memory_manager 
+from pydantic import BaseModel
+
+class Triple(BaseModel): 
+    """Store all new facts, preferences, and relationships as triples."""
+    subject: str
+    predicate: str
+    object: str
+    context: str | None = None
+
+# Configure extraction
+manager = create_memory_manager(  
+    "anthropic:claude-3-5-sonnet-latest",
+    schemas=[Triple], 
+    instructions="Extract user preferences and any other useful information",
+    enable_inserts=True,
+    enable_deletes=True,
+)
+After the first short interaction, the system has extracted some semantic triples:
+
+
+# First conversation - extract triples
+conversation1 = [
+    {"role": "user", "content": "Alice manages the ML team and mentors Bob, who is also on the team."}
+]
+memories = manager.invoke({"messages": conversation1})
+print("After first conversation:")
+for m in memories:
+    print(m)
+# ExtractedMemory(id='f1bf258c-281b-4fda-b949-0c1930344d59', content=Triple(subject='Alice', predicate='manages', object='ML_team', context=None))
+# ExtractedMemory(id='0214f151-b0c5-40c4-b621-db36b845956c', content=Triple(subject='Alice', predicate='mentors', object='Bob', context=None))
+# ExtractedMemory(id='258dbf2d-e4ac-47ac-8ffe-35c70a3fe7fc', content=Triple(subject='Bob', predicate='is_member_of', object='ML_team', context=None))
+The second conversation updates some existing memories. Since we have enabled "deletes", the manager will return RemoveDoc objects to indicate that the memory should be removed, and a new memory will be created in its place. Since this uses the core "functional" API (aka, it doesn't read or write to a database), you can control what "removal" means, be that a soft or hard delete, or simply a down-weighting of the memory.
+
+
+# Second conversation - update and add triples
+conversation2 = [
+    {"role": "user", "content": "Bob now leads the ML team and the NLP project."}
+]
+update = manager.invoke({"messages": conversation2, "existing": memories})
+print("After second conversation:")
+for m in update:
+    print(m)
+# ExtractedMemory(id='65fd9b68-77a7-4ea7-ae55-66e1dd603046', content=RemoveDoc(json_doc_id='f1bf258c-281b-4fda-b949-0c1930344d59'))
+# ExtractedMemory(id='7f8be100-5687-4410-b82a-fa1cc8d304c0', content=Triple(subject='Bob', predicate='leads', object='ML_team', context=None))
+# ExtractedMemory(id='f4c09154-2557-4e68-8145-8ccd8afd6798', content=Triple(subject='Bob', predicate='leads', object='NLP_project', context=None))
+# ExtractedMemory(id='f1bf258c-281b-4fda-b949-0c1930344d59', content=Triple(subject='Alice', predicate='manages', object='ML_team', context=None))
+# ExtractedMemory(id='0214f151-b0c5-40c4-b621-db36b845956c', content=Triple(subject='Alice', predicate='mentors', object='Bob', context=None))
+# ExtractedMemory(id='258dbf2d-e4ac-47ac-8ffe-35c70a3fe7fc', content=Triple(subject='Bob', predicate='is_member_of', object='ML_team', context=None))
+existing = [m for m in update if isinstance(m.content, Triple)]
+The third conversation overwrites even more memories.
+
+
+# Delete triples about an entity
+conversation3 = [
+    {"role": "user", "content": "Alice left the company."}
+]
+final = manager.invoke({"messages": conversation3, "existing": existing})
+print("After third conversation:")
+for m in final:
+    print(m)
+# ExtractedMemory(id='7ca76217-66a4-4041-ba3d-46a03ea58c1b', content=RemoveDoc(json_doc_id='f1bf258c-281b-4fda-b949-0c1930344d59'))
+# ExtractedMemory(id='35b443c7-49e2-4007-8624-f1d6bcb6dc69', content=RemoveDoc(json_doc_id='0214f151-b0c5-40c4-b621-db36b845956c'))
+# ExtractedMemory(id='65fd9b68-77a7-4ea7-ae55-66e1dd603046', content=RemoveDoc(json_doc_id='f1bf258c-281b-4fda-b949-0c1930344d59'))
+# ExtractedMemory(id='7f8be100-5687-4410-b82a-fa1cc8d304c0', content=Triple(subject='Bob', predicate='leads', object='ML_team', context=None))
+# ExtractedMemory(id='f4c09154-2557-4e68-8145-8ccd8afd6798', content=Triple(subject='Bob', predicate='leads', object='NLP_project', context=None))
+# ExtractedMemory(id='f1bf258c-281b-4fda-b949-0c1930344d59', content=Triple(subject='Alice', predicate='manages', object='ML_team', context=None))
+# ExtractedMemory(id='0214f151-b0c5-40c4-b621-db36b845956c', content=Triple(subject='Alice', predicate='mentors', object='Bob', context=None))
+# ExtractedMemory(id='258dbf2d-e4ac-47ac-8ffe-35c70a3fe7fc', content=Triple(subject='Bob', predicate='is_member_of', object='ML_team', context=None))
+For more about semantic memories, see Memory Types.
+
+With storage¶
+The same extraction can be managed automatically by LangGraph's BaseStore:
+
+API: init_chat_model | entrypoint | create_memory_store_manager
+
+
+from langchain.chat_models import init_chat_model
+from langgraph.func import entrypoint
+from langgraph.store.memory import InMemoryStore
+from langmem import create_memory_store_manager
+
+# Set up store and models
+store = InMemoryStore(  
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    namespace=("chat", "{user_id}", "triples"),  
+    schemas=[Triple],
+    instructions="Extract all user information and events as triples.",
+    enable_inserts=True,
+    enable_deletes=True,
+)
+my_llm = init_chat_model("anthropic:claude-3-5-sonnet-latest")
+You can also extract multiple memory types at once:
+
+
+schemas=[Triple, Preference, Relationship]
+Each type can have its own extraction rules and storage patterns Namespaces let you organize memories by user, team, or domain:
+
+
+# User-specific memories
+("chat", "user_123", "triples")
+
+# Team-shared knowledge
+("chat", "team_x", "triples")
+
+# Domain-specific extraction
+("chat", "user_123", "preferences")
+The {user_id} placeholder is replaced at runtime:
+
+
+# Extract memories for User A
+manager.invokse(
+    {"messages": [{"role": "user", "content": "I prefer dark mode"}]},
+    config={"configurable": {"user_id": "user-a"}}  
+)
+
+# Define app with store context
+@entrypoint(store=store) 
+def app(messages: list):
+    response = my_llm.invoke(
+        [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.",
+            },
+            *messages
+        ]
+    )
+
+    # Extract and store triples (Uses store from @entrypoint context)
+    manager.invoke({"messages": messages}) 
+    return response
+Then running the app:
+
+
+# First conversation
+app.invoke(
+    [
+        {
+            "role": "user",
+            "content": "Alice manages the ML team and mentors Bob, who is also on the team.",
+        },
+    ],
+    config={"configurable": {"user_id": "user123"}},
+)
+
+# Second conversation
+app.invoke(
+    [
+        {"role": "user", "content": "Bob now leads the ML team and the NLP project."},
+    ],
+    config={"configurable": {"user_id": "user123"}},
+)
+
+# Third conversation
+app.invoke(
+    [
+        {"role": "user", "content": "Alice left the company."},
+    ],
+    config={"configurable": {"user_id": "user123"}},
+)
+
+# Check stored triples
+for item in store.search(("chat", "user123")):
+    print(item.namespace, item.value)
+
+# Output:
+# ('chat', 'user123', 'triples') {'kind': 'Triple', 'content': {'subject': 'Bob', 'predicate': 'is_member_of', 'object': 'ML_team', 'context': None}}
+# ('chat', 'user123', 'triples') {'kind': 'Triple', 'content': {'subject': 'Bob', 'predicate': 'leads', 'object': 'ML_team', 'context': None}}
+# ('chat', 'user123', 'triples') {'kind': 'Triple', 'content': {'subject': 'Bob', 'predicate': 'leads', 'object': 'NLP_project', 'context': None}}
+# ('chat', 'user123', 'triples') {'kind': 'Triple', 'content': {'subject': 'Alice', 'predicate': 'employment_status', 'object': 'left_company', 'context': None}}
+See Storage System for namespace patterns. This approach is also compatible with the ReflectionExecutor to defer & deduplicate memory processing.
+
+Using a Memory Manager Agent¶
+The technique above tries to manage memory, including insertions, deletions, and deletions, in a single LLM call. If there is a lot of new information, this may be complicated for the LLM to multi-task. Alternatively, you could create an agent, similar to that in the quick start, which you prompt to manage memory over multiple LLM calls. You can still serparate this agent from your user-facing agent, but it can give your LLM extra time to process new information and complex updates.
+
+API: init_chat_model | entrypoint | create_react_agent | create_manage_memory_tool | create_search_memory_tool
+
+
+from langchain.chat_models import init_chat_model
+from langgraph.func import entrypoint
+from langgraph.prebuilt import create_react_agent
+from langgraph.store.memory import InMemoryStore
+
+from langmem import create_manage_memory_tool, create_search_memory_tool
+
+# Set up store and checkpointer
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+my_llm = init_chat_model("anthropic:claude-3-5-sonnet-latest")
+
+
+def prompt(state):
+    """Prepare messages with context from existing memories."""
+    memories = store.search(
+        ("memories",),
+        query=state["messages"][-1].content,
+    )
+    system_msg = f"""You are a memory manager. Extract and manage all important knowledge, rules, and events using the provided tools.
+
+
+
+Existing memories:
+<memories>
+{memories}
+</memories>
+
+Use the manage_memory tool to update and contextualize existing memories, create new ones, or delete old ones that are no longer valid.
+You can also expand your search of existing memories to augment using the search tool."""
+    return [{"role": "system", "content": system_msg}, *state["messages"]]
+
+
+# Create the memory extraction agent
+manager = create_react_agent(
+    "anthropic:claude-3-5-sonnet-latest",
+    prompt=prompt,
+    tools=[
+        # Agent can create/update/delete memories
+        create_manage_memory_tool(namespace=("memories",)),
+        create_search_memory_tool(namespace=("memories",)),
+    ],
+)
+
+
+# Run extraction in background
+@entrypoint(store=store)
+def app(messages: list):
+    response = my_llm.invoke(
+        [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.",
+            },
+            *messages,
+        ]
+    )
+
+    # Extract and store triples (Uses store from @entrypoint context)
+    manager.invoke({"messages": messages})
+    return response
+
+
+app.invoke(
+    [
+        {
+            "role": "user",
+            "content": "Alice manages the ML team and mentors Bob, who is also on the team.",
+        }
+    ]
+)
+
+print(store.search(("memories",)))
+
+# [
+#     Item(
+#         namespace=["memories"],
+#         key="5ca8dacc-7d46-40bb-9b3d-f4c2dc5c4b30",
+#         value={"content": "Alice is the manager of the ML (Machine Learning) team"},
+#         created_at="2025-02-11T00:28:01.688490+00:00",
+#         updated_at="2025-02-11T00:28:01.688499+00:00",
+#         score=None,
+#     ),
+#     Item(
+#         namespace=["memories"],
+#         key="586783fa-e501-4835-8651-028c2735f0d0",
+#         value={"content": "Bob works on the ML team"},
+#         created_at="2025-02-11T00:28:04.408826+00:00",
+#         updated_at="2025-02-11T00:28:04.408841+00:00",
+#         score=None,
+#     ),
+#     Item(
+#         namespace=["memories"],
+#         key="19f75f64-8787-4150-a439-22068b00118a",
+#         value={"content": "Alice mentors Bob on the ML team"},
+#         created_at="2025-02-11T00:28:06.951838+00:00",
+#         updated_at="2025-02-11T00:28:06.951847+00:00",
+#         score=None,
+#     ),
+# ]
+This approach is also compatible with the ReflectionExecutor to defer & deduplicate memory processing.
+
+When to Use Semantic Memories¶
+Semantic memories help agents learn from conversations. They extract and store meaningful information that might be useful in future interactions. For example, when discussing a project, the agent might remember technical requirements, team structure, or key decisions - anything that could provide helpful context later.
+
+The goal is to build understanding over time, just like humans do through repeated interactions. Not everything needs to be remembered - focus on information that helps the agent be more helpful in future conversations. Semantic memory works best when the agent is able to save important memories and the dense relationships between them so that it can later recall not just "what" but "why" and "how".
+
+
+How to Extract Episodic Memories¶
+Need your agent to learn from experience? Here's how to use LangMem for experience replay—capturing not just what happened, but the complete chain of thought that led to success. While semantic memory builds knowledge ("what"), episodic memory captures expertise ("how").
+
+Without storage¶
+Below is an example of how to use LangMem to extract episodic memories without storage. Feel free to adapt and modify the code to your needs.
+
+API: create_memory_manager
+
+
+from langmem import create_memory_manager
+from pydantic import BaseModel, Field
+
+
+class Episode(BaseModel):  
+    """Write the episode from the perspective of the agent within it. Use the benefit of hindsight to record the memory, saving the agent's key internal thought process so it can learn over time."""
+
+    observation: str = Field(..., description="The context and setup - what happened")
+    thoughts: str = Field(
+        ...,
+        description="Internal reasoning process and observations of the agent in the episode that let it arrive"
+        ' at the correct action and result. "I ..."',
+    )
+    action: str = Field(
+        ...,
+        description="What was done, how, and in what format. (Include whatever is salient to the success of the action). I ..",
+    )
+    result: str = Field(
+        ...,
+        description="Outcome and retrospective. What did you do well? What could you do better next time? I ...",
+    )
+
+manager = create_memory_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    schemas=[Episode],  
+    instructions="Extract examples of successful explanations, capturing the full chain of reasoning. Be concise in your explanations and precise in the logic of your reasoning.",
+    enable_inserts=True,
+)
+After a successful explanation:
+
+
+conversation = [
+    {
+        "role": "user",
+        "content": "What's a binary tree? I work with family trees if that helps",
+    },
+    {
+        "role": "assistant",
+        "content": "A binary tree is like a family tree, but each parent has at most 2 children. Here's a simple example:\n   Bob\n  /  \\\nAmy  Carl\n\nJust like in family trees, we call Bob the 'parent' and Amy and Carl the 'children'.",
+    },
+    {
+        "role": "user",
+        "content": "Oh that makes sense! So in a binary search tree, would it be like organizing a family by age?",
+    },
+]
+
+episodes = manager.invoke({"messages": conversation})
+print(episodes[0])
+
+# ExtractedMemory(
+#     id="2e5c551f-58a7-40c2-96b3-cabdfa5ccb31",
+#     content=Episode(
+#         observation="In a teaching interaction, I used a family tree analogy to explain binary trees, which led to a successful understanding. The student then made an insightful connection to binary search trees and age ordering.",
+#         thoughts="I noticed that connecting abstract data structures to familiar concepts like family relationships made the concept more accessible. The student's quick grasp and ability to extend the analogy to binary search trees showed the effectiveness of this approach. Using relatable examples helps bridge the gap between technical concepts and everyday understanding.",
+#         action='I explained binary trees using a family tree metaphor, drawing a simple diagram with "Bob" as parent and "Amy" and "Carl" as children. This visualization provided a concrete, relatable example that built on the student\'s existing knowledge of family trees.',
+#         result="The explanation was highly successful, evidenced by the student's immediate comprehension (\"Oh that makes sense!\") and their ability to make the cognitive leap to understanding binary search trees' ordering property. For future explanations, I should continue using familiar analogies while being prepared to build upon them for more complex concepts. The family tree analogy proved particularly effective for explaining hierarchical structures.",
+#     ),
+# )
+With storage¶
+Let's extend our example to store and retrieve episodes using LangGraph's storage system:
+
+API: init_chat_model | entrypoint | create_memory_store_manager
+
+
+from langchain.chat_models import init_chat_model
+from langgraph.func import entrypoint
+from langgraph.store.memory import InMemoryStore
+from langmem import create_memory_store_manager
+
+# Set up vector store for similarity search
+store = InMemoryStore(
+    index={
+        "dims": 1536,
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+
+# Configure memory manager with storage
+manager = create_memory_store_manager(
+    "anthropic:claude-3-5-sonnet-latest",
+    namespace=("memories", "episodes"),
+    schemas=[Episode],
+    instructions="Extract exceptional examples of noteworthy problem-solving scenarios, including what made them effective.",
+    enable_inserts=True,
+)
+
+llm = init_chat_model("anthropic:claude-3-5-sonnet-latest")
+
+
+@entrypoint(store=store)
+def app(messages: list):
+    # Step 1: Find similar past episodes
+    similar = store.search(
+        ("memories", "episodes"),
+        query=messages[-1]["content"],
+        limit=1,
+    )
+
+    # Step 2: Build system message with relevant experience
+    system_message = "You are a helpful assistant."
+    if similar:
+        system_message += "\n\n### EPISODIC MEMORY:"
+        for i, item in enumerate(similar, start=1):
+            episode = item.value["content"]
+            system_message += f"""
+
+Episode {i}:
+When: {episode['observation']}
+Thought: {episode['thoughts']}
+Did: {episode['action']}
+Result: {episode['result']}
+        """
+
+    # Step 3: Generate response using past experience
+    response = llm.invoke([{"role": "system", "content": system_message}, *messages])
+
+    # Step 4: Store this interaction if successful
+    manager.invoke({"messages": messages})
+    return response
+
+
+app.invoke(
+    [
+        {
+            "role": "user",
+            "content": "What's a binary tree? I work with family trees if that helps",
+        },
+    ],
+)
+print(store.search(("memories", "episodes"), query="Trees"))
+
+# [
+#     Item(
+#         namespace=["memories", "episodes"],
+#         key="57f6005b-00f3-4f81-b384-961cb6e6bf97",
+#         value={
+#             "kind": "Episode",
+#             "content": {
+#                 "observation": "User asked about binary trees and mentioned familiarity with family trees. This presented an opportunity to explain a technical concept using a relatable analogy.",
+#                 "thoughts": "I recognized this as an excellent opportunity to bridge understanding by connecting a computer science concept (binary trees) to something the user already knows (family trees). The key was to use their existing mental model of hierarchical relationships in families to explain binary tree structures.",
+#                 "action": "Used family tree analogy to explain binary trees: Each person (node) in a binary tree can have at most two children (left and right), unlike family trees where people can have multiple children. Drew parallel between parent-child relationships in both structures while highlighting the key difference of the two-child limitation in binary trees.",
+#                 "result": "Successfully translated a technical computer science concept into familiar terms. This approach demonstrated effective teaching through analogical reasoning - taking advantage of existing knowledge structures to build new understanding. For future similar scenarios, this reinforces the value of finding relatable real-world analogies when explaining technical concepts. The family tree comparison was particularly effective because it maintained the core concept of hierarchical relationships while clearly highlighting the key distinguishing feature (binary limitation).",
+#             },
+#         },
+#         created_at="2025-02-09T03:40:11.832614+00:00",
+#         updated_at="2025-02-09T03:40:11.832624+00:00",
+#         score=0.30178054939692683,
+#     )
+# ]
+For production, use a persistent store like AsyncPostgresStore
+Let's break down what's happening:
+
+Setup: We create a vector store for similarity search and configure the memory manager with storage support
+Search: When handling a message, we first search for similar past episodes
+Apply: If we find a relevant episode, we include its learnings in the system message
+Learn: After generating a response, we store this interaction as a new episode
+This creates a learning loop where the agent continuously improves by drawing on past experiences.
+
+When to Use Episodic Memory¶
+Episodic memory drives adaptive learning. While semantic memory builds a knowledge base of facts ("Python is a programming language"), episodic memory captures the expertise of how to apply that knowledge effectively ("explaining Python using snake analogies confused users, but comparing it to recipe steps worked well").
+
+This experience replay helps agents: - Adapt teaching style based on what worked - Learn from successful problem-solving approaches - Build a library of proven techniques - Understand not just what to do, but why it works

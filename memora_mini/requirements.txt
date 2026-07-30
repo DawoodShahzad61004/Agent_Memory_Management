@@ -1,0 +1,17 @@
+# memora_mini — pinned to what the LangMem/.venv sandbox actually resolved.
+# Deliberately absent: langmem (rejected — its managers require tool-calling).
+
+chromadb==1.5.9
+langgraph==1.2.9
+openai==2.49.0
+pydantic==2.13.4
+python-dotenv==1.2.2
+sentence-transformers==5.6.1
+torch==2.13.0
+numpy==2.5.1
+
+# structured-output repair (tier 2 of json_fix.py)
+json-repair==0.61.7
+
+# tests
+pytest==9.1.1

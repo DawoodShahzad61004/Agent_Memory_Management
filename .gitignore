@@ -26,4 +26,5 @@ skills-lock.json
 .codex/
 AGENTS.md
 
-chroma_store/
+chroma_store/memory_audit.jsonl
+.pytest_cache/
