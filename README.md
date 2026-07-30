@@ -23,9 +23,17 @@ Full project history and reasoning lives in `docs/`, following a five-file track
 
 ## Current state
 
-**LangMem** is the first (and so far only) candidate under evaluation. `LangMem/` holds its environment
-(tutorial reference material, `LangMem_Documentation.txt`) and is now reference material only — the active
-experiment no longer runs out of that directory.
+**Evaluation is currently paused.** Across the candidates evaluated so far, tool-calling support (or its
+absence) keeps resurfacing as a design constraint — a hard blocker for LangMem's SDK layer, and a recurring
+soft constraint shaping Mem0's provider/extraction choices even though its core pipeline doesn't strictly
+require it (see `docs/Research.md` topic 9). An upgrade to a tool-calling-capable local LLM is under
+consideration but not yet decided; no further candidate work is planned until that's resolved (`docs/Decisions.md`
+ADR-024). `memora_mini/` (LangMem) and `Customer_Support_Agent/` (Mem0, first pass) are both left in their
+current, already-tested states.
+
+**LangMem** was the first candidate evaluated. `LangMem/` holds its environment (tutorial reference material,
+`LangMem_Documentation.txt`) and is now reference material only — the active experiment no longer runs out of
+that directory.
 
 **`memora_mini/`** is the current implementation: a native reimplementation of LangMem's memory taxonomy
 (episodic / semantic / procedural) and its `BaseStore`-shaped four-verb store interface, built with **no
@@ -61,5 +69,25 @@ Requires `CUSTOM_API_BASE` / `CUSTOM_API_KEY` / `CUSTOM_API_MODEL_NAME` set in t
 calls (`main.py`, and the live-learning steps of `demo.py`); the test suite and the structural parts of `demo.py`
 need neither.
 
-Future candidates (Mem0, Letta, etc.) will each get their own top-level directory the same way, independent of
-`LangMem/` and `memora_mini/`.
+### Mem0 — `Customer_Support_Agent/` (first pass, in progress)
+
+**Mem0** is the second candidate under evaluation: a single-file LangGraph chatbot (`main.py`) that calls Mem0's
+hosted Platform client (`mem0.MemoryClient`) directly for `search()`/`add()`, rather than the multi-module,
+namespace-separated shape `memora_mini/` uses for LangMem. It's a first-pass wiring check, not yet decomposed
+into Memora's four memory roles — everything is stored in one undifferentiated Mem0 space, scoped only by a
+hardcoded `user_id`.
+
+A captured run (`run_log.txt`) confirms the read/write round-trip works end-to-end against a live LLM, with two
+open issues logged in `docs/Bugs.md`: BUG-002 (an intermittent DNS resolution failure reaching Mem0's hosted API,
+traced to the local router's flaky IPv6 resolver, not a code defect) and BUG-004 (`mem0.add()`'s own return value
+always claims "0 memories added" even though later searches prove writes are succeeding). Using the *hosted*
+Mem0 Platform (rather than Mem0's self-hosted Docker/Postgres+pgvector stack) is a first-pass convenience, not a
+settled choice — see `docs/Decisions.md` ADR-022 — since it's the one place in this repo that sends interaction
+content to a third-party cloud service, cutting against the no-cloud-egress precedent LangMem's evaluation
+otherwise established.
+
+Full detail: `docs/Architecture.md` § "Candidate: Mem0".
+
+Future candidates (Graphiti, Letta, etc.) will each get their own top-level directory the same way, independent
+of `LangMem/`, `memora_mini/`, and `Customer_Support_Agent/` — though see "Current state" above: that work is on
+hold for now.

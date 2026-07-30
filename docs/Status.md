@@ -156,3 +156,62 @@
 * Tracked in: `docs/*.md` (all five updated), `README.md` (rewritten), `graphify-out/` (regenerated).
 
 ---
+
+#### 2026-07-30 — Mem0 selected as second candidate; `Customer_Support_Agent/` wired against the hosted Platform client
+
+* Selected **Mem0** as the second candidate to evaluate, per the queued order from Research.md topic 1 / ADR-004,
+  now that LangMem/`memora_mini` had reached a stable, tested state (ADR-020).
+* Built `Customer_Support_Agent/main.py`: a single-file LangGraph chatbot with one `chatbot` node that searches
+  Mem0 (`mem0.search(..., filters={"user_id": user_id})`), builds a system-prompt context from the results, calls
+  the LLM, and writes the turn back via `mem0.add()`. Set up its own `uv`-managed `.venv` (`mem0ai`, `langgraph`,
+  `langchain-openai`, `python-dotenv`).
+* First run crashed: `httpx.ConnectError: [Errno 11001] getaddrinfo failed` from `MemoryClient()`'s startup auth
+  check against `api.mem0.ai` (logged as BUG-002). Diagnosed via `nslookup`/`Get-DnsClientServerAddress`: the
+  Wi-Fi adapter's configured DNS resolver is the router's own link-local IPv6 address (`fe80::1`), which is
+  intermittently slow/unresponsive (2 of 5 repeated lookups timed out); general connectivity was otherwise fine.
+  Not fixed at the network level — left open, since a public-resolver change (8.8.8.8/1.1.1.1) was offered but
+  not actioned.
+* Also found `.env` wasn't loading: `main.py` called `load_dotenv()` with no path, and the actual `.env` lives at
+  the repo root, a level above `Customer_Support_Agent/` — same layout `temp_graph/` hit (ADR-006). Fixed by
+  resolving the repo-root `.env` explicitly by absolute path (BUG-003, now standardized as ADR-023).
+* Asked whether self-hosting Mem0 via Docker would resolve the DNS crash: partially — it would remove the
+  `api.mem0.ai` dependency specifically, but not `CUSTOM_API_BASE` (the LLM endpoint) or any other external call
+  routed through the same flaky resolver. Not acted on yet; `main.py` still uses the hosted `MemoryClient`
+  (ADR-022, flagged against the no-cloud-egress precedent from Research.md topic 6).
+* Investigated Mem0's actual self-hosted (v3) capabilities in depth after a first-pass answer conflated
+  Platform-only features and pre-v3 behavior with the current OSS server. Verified directly against Mem0's
+  current source/docs: bundled Postgres+pgvector storage (Neo4j support removed in v3), no built-in
+  positive/negative episodic memory type outside the Platform-only Feedback API, write-time consolidation
+  reduced to single-pass ADD-only + hash dedup, hybrid semantic+BM25+entity search present but degrading without
+  the `nlp` extras, and — contrary to the first answer — **no hard tool-calling requirement** (JSON output
+  suffices; `infer=False` is a raw-storage escape hatch). Tracked in Research.md topic 9.
+* Captured a live, 5-turn end-to-end conversation (`run_log.txt`) against the hosted Mem0 Platform and a live
+  LLM: recall grew across turns (0 → 1 → 3 → 6 → 8 relevant memories found by `mem0.search()`), and the assistant
+  correctly recalled cross-turn details (a lasagna complaint, a barista compliment) by the final turn. However,
+  every turn's `mem0.add()` logged `0 memories added` despite those same later searches proving new memories were
+  in fact written each turn — logged as BUG-004, open, root cause not yet determined.
+* Noted, while documenting this pass, that the current `main.py` stores everything in one undifferentiated Mem0
+  space (no episodic/semantic/failure split, no accept/reject step) — a thinner mapping onto Memora's four-role
+  architecture (ADR-003) than `memora_mini` provides; extending it is the open next step before Mem0 can be
+  fairly compared.
+* Tracked in: `Customer_Support_Agent/` (`main.py`, `run_log.txt`, `.venv`); Architecture.md (new Mem0 candidate
+  section); Bugs.md BUG-002 through BUG-005; Decisions.md ADR-021 through ADR-023; Research.md topic 9;
+  `README.md` updated; `graphify-out/` regenerated.
+
+---
+
+#### 2026-07-30 — Evaluation paused: several candidates lean on tool-calling; local LLM upgrade under consideration
+
+* Paused active evaluation work in this repo. Across the candidates surveyed so far, tool-calling turned out to
+  be a recurring dependency — LangMem's SDK layer categorically requires it via `trustcall` (ADR-010), and while
+  Mem0's core memory pipeline itself does not (Research.md topic 9), enough of the broader tooling and
+  provider-specific behavior in this space assumes it that the constraint keeps resurfacing candidate after
+  candidate.
+* Upgrading the local LLM server to a tool-calling-capable model is under consideration, which would remove this
+  constraint for future candidates — not yet decided.
+* No further candidate work (Mem0 or otherwise) planned until that decision is made. `Customer_Support_Agent/`'s
+  Mem0 first pass (BUG-002 through BUG-005) and `memora_mini`'s LangMem reimplementation both remain in their
+  current, already-tested states — nothing here needs to be rolled back, just picked back up later.
+* Tracked in: Decisions.md ADR-024; `README.md` "Current state" updated to reflect the pause.
+
+---

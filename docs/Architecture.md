@@ -5,7 +5,9 @@ memory-management approach should replace or augment the hand-rolled memory laye
 **Memora** (sibling directory `../RAG-work`, a self-learning agentic RAG system). Each candidate gets its own
 throwaway experiment, built to mimic the memory behavior Memora actually needs, so candidates can be compared
 against each other and against Memora's existing implementation on equal footing (see Decisions.md ADR-002,
-ADR-003). **LangMem** is the first (and so far only) candidate under evaluation.
+ADR-003). **LangMem** was the first candidate evaluated (`memora_mini/`, below); **Mem0** is the second,
+currently a first-pass wiring check (`Customer_Support_Agent/`, below). Evaluation is currently **paused**
+pending a decision on upgrading the local LLM to a tool-calling-capable model (Decisions.md ADR-024).
 
 The evaluation went through two implementations:
 
@@ -184,6 +186,59 @@ live learn → semantically-different rephrasing → thumbdown-then-reword (BUG-
 consolidation → contradiction supersede → final stats), used to verify the whole pipeline without live LLM calls
 during structural testing (see Status.md).
 
+## Candidate: Mem0 (`Customer_Support_Agent/`) — first pass, in progress
+
+Per ADR-021/Research.md topic 1's queued candidate order, Mem0 is the second library under evaluation, following
+LangMem/`memora_mini`. Unlike `memora_mini`, this is a first-pass wiring check only — a single-file LangGraph
+chatbot exercising Mem0's own `add()`/`search()` API directly — not yet decomposed into the four-role
+architecture ADR-003 requires of a finished comparison.
+
+```
+Customer_Support_Agent/
+├── .venv/           uv-managed Python 3.13 environment: mem0ai + langgraph + langchain-openai + python-dotenv
+├── main.py          single-file LangGraph chatbot: one `chatbot` node, mem0 MemoryClient search + add
+└── run_log.txt      captured 5-turn REPL transcript, hosted Mem0 Platform, live LLM
+```
+
+### Graph
+
+```
+START -> chatbot -> chatbot   (self-loop; no edge to END)
+```
+
+`chatbot` (`main.py:31-80`) is the only node: on each turn it searches Mem0 for memories filtered by `user_id`,
+builds a system prompt from the results, calls the LLM, then writes the turn back via `mem0.add()`.
+`run_conversation()` (`main.py:89-97`) drives the graph via `.stream()` and returns as soon as the first event
+carries a message — which is what keeps the `chatbot -> chatbot` self-loop (`main.py:85`) from actually looping
+forever in practice (see Bugs.md BUG-005); there is no conditional edge or `END` node in the graph itself.
+
+### Memory model
+
+Everything is stored in one Mem0 space, scoped only by a hardcoded `mem0_user_id = "alice"` (`main.py:101`) —
+there is no namespace/collection split between semantic, episodic, and failure roles the way `memora_mini`'s four
+Chroma collections provide, and no accept/reject step (contrast `memora_mini`'s `reflect.py`, which runs its
+episodic and failure lanes through the same extract→classify→apply pipeline only after a turn is explicitly
+marked good or bad). Every turn is written to Mem0 unconditionally via `mem0.add()` (`main.py:68`), and Mem0's
+own extraction pipeline (not this code) decides what, if anything, becomes a durable memory — the opposite
+division of responsibility from `memora_mini`'s explicit extract/classify/apply stages, and closer to LangMem's
+`create_memory_manager` in that regard (see Decisions.md ADR-010, Research.md topic 2), except Mem0's extraction
+is opaque to the caller rather than returning structured `ExtractedMemory` objects.
+
+This is a substantially thinner mapping onto Memora's four memory roles than ADR-003 calls for; extending it to
+a fair comparison (separate accepted/rejected write paths, a read-only semantic/document layer, distinguishing
+"learned fact" from "raw turn") is the open next step for this candidate — currently on hold, see ADR-024.
+
+### Storage backend: hosted Mem0 Platform, not self-hosted Docker
+
+`main.py:23` calls `MemoryClient()` — Mem0's **hosted Platform** client (`api.mem0.ai`), authenticated via
+`MEM0_API_KEY` (not present in the repo-root `.env` as of this writing; presumably exported in-shell, since
+`run_log.txt` shows successful authenticated calls). This is notable because it's the one point in the repo that
+sends interaction content to a third-party cloud service — everything else (`memora_mini`'s ChromaDB, LangMem's
+tutorial-only `.env`) runs fully local, and Research.md topic 6 explicitly rejected MongoDB Atlas for the same
+reason (no-cloud-egress precedent, since a production port of whichever candidate wins would carry the same
+habit into Memora). Self-hosting Mem0 via its Docker Compose stack (bundled Postgres+pgvector) would close this
+gap and was investigated (Research.md topic 9) but not yet built — see Decisions.md ADR-022.
+
 ## Superseded: `temp_graph/` (deleted 2026-07-29)
 
 The original LangMem-SDK-based prototype: a two-node LangGraph (`user_input -> generate_answer`) backed by two
@@ -266,5 +321,26 @@ evaluation, using `Chat 33 (July 29).txt`, the current contents of every `memora
 (and its UTF-16LE encoding bug, BUG-001, fixed in the process — see Bugs.md). `memora_mini/temp_project_description.md`
 and `memora_mini/temp_decision_notedown.md` were deleted once their content was folded in, so a single documentation
 set (`docs/`) remains. `graphify-out/` was regenerated against the updated tree.
+
+### 2026-07-30 — Mem0 candidate: `Customer_Support_Agent/` first pass, then evaluation paused
+
+`Customer_Support_Agent/` created: a single-file LangGraph chatbot (`main.py`) calling Mem0's hosted `MemoryClient`
+directly (`mem0.search()`/`mem0.add()`), with its own `uv`-managed `.venv`. First run crashed with
+`httpx.ConnectError: getaddrinfo failed` inside `MemoryClient()`'s startup auth check (BUG-002); diagnosed as the
+Wi-Fi adapter's link-local IPv6 DNS resolver intermittently timing out, not a code defect. Separately found
+`load_dotenv()` was called with no path and never found the repo-root `.env` (BUG-003), fixed the same way
+`temp_graph/` was (ADR-006) by resolving `Path(__file__).resolve().parent.parent / ".env"` explicitly (ADR-023).
+A live 5-turn conversation was then captured end-to-end (`run_log.txt`) against the hosted Mem0 Platform and a
+live LLM, demonstrating growing recall across turns (0 → 1 → 3 → 6 → 8 relevant memories) — but every turn's
+`mem0.add()` logged "0 memories added" despite those same later searches proving new memories were in fact being
+written (BUG-004, open). A parallel research pass (Research.md topic 9) corrected an initial, partly-wrong answer
+about self-hosted Mem0's OSS capabilities (storage, episodic valence, consolidation, semantic search,
+tool-calling) against Mem0's actual current (v3) source and docs — concluding, notably, that Mem0's core pipeline
+does *not* hard-require tool-calling.
+
+Evaluation was then paused: across candidates so far, tool-calling has kept resurfacing as a design constraint
+(a hard blocker for LangMem's SDK layer, a soft one shaping Mem0's provider/extraction choices), and an upgrade
+to a tool-calling-capable local LLM is under consideration but not yet decided. No further candidate work is
+planned until that decision is made (ADR-024).
 
 ---

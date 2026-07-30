@@ -267,3 +267,59 @@
 | **Impact** | `temp_graph/` no longer exists in the repo (1,446 lines removed). `memora_mini/config.py::ENV_PATH` now resolves the repo-root `.env` instead of `LangMem/.env`; the active environment moved from `LangMem/.venv` to a root-level `.venv/`. All 58 tests were re-verified passing from the new location with no further code changes needed. `memora_mini/`'s own `README.md`/`DECISIONS.md` were renamed to `temp_project_description.md`/`temp_decision_notedown.md` and, once folded into this five-file `docs/` system, deleted (see ADR-010's changelog entry in Architecture.md and Status.md, 2026-07-30). |
 
 ---
+
+## ADR-021 · Mem0 selected as the second candidate to evaluate
+
+| Field | Detail |
+|---|---|
+| **Decision** | Evaluate Mem0 next, after LangMem/`memora_mini`. |
+| **Date** | 2026-07-30 |
+| **Context** | Research.md topic 1's candidate survey queued Mem0, Graphiti, Cognee, and Letta behind LangMem; LangMem's evaluation (`memora_mini`) reached a stable, tested state (Decisions.md ADR-020), freeing capacity to move to the next candidate. |
+| **Options Considered** | Continue refining `memora_mini` further · move to Graphiti (temporal knowledge graphs) · move to Mem0 (standalone `memory.add()`/`memory.search()` service). |
+| **Chosen Solution** | Mem0. |
+| **Rationale** | Mem0 was already identified in Research.md topic 1 as the most direct structural alternative to `memora_mini`'s own `learned_qa`-style pipeline — a standalone add/search memory service rather than a knowledge-graph or full agent runtime — making it the next-lowest-friction comparison per the queued order. |
+| **Impact** | `Customer_Support_Agent/` created as Mem0's independent top-level candidate directory, per ADR-002's one-directory-per-candidate pattern. |
+
+---
+
+## ADR-022 · Mem0's first pass uses the hosted Platform client; self-hosted Docker deferred
+
+| Field | Detail |
+|---|---|
+| **Decision** | `Customer_Support_Agent/main.py` wires against Mem0's hosted Platform (`mem0.MemoryClient`, `api.mem0.ai`) for the first pass, rather than starting directly with Mem0's self-hosted Docker OSS stack (Postgres + pgvector). |
+| **Date** | 2026-07-30 |
+| **Context** | Getting the first pass wired end-to-end (`mem0.search()`/`mem0.add()` inside a LangGraph node) was the immediate goal; `MemoryClient()` is the fastest path to that, requiring only an API key rather than standing up a Docker Compose stack. |
+| **Options Considered** | Hosted Platform client (fastest to wire, but sends interaction content to a third-party cloud service) · self-hosted Docker OSS stack (fully local, consistent with the no-cloud-egress precedent from Research.md topic 6/ADR-019, but more setup before any comparison could begin). |
+| **Chosen Solution** | Hosted Platform client, for now. |
+| **Rationale** | This was a pragmatic first-pass sequencing choice, not a considered rejection of the no-cloud precedent — the tradeoff wasn't weighed the way ADR-019's MongoDB Atlas decision was. It is flagged here explicitly because it currently contradicts that precedent, and should not be read as a signal that the constraint no longer applies. |
+| **Impact** | `Customer_Support_Agent/main.py:23`. `run_log.txt`'s captured conversation sent real interaction content to `api.mem0.ai`. Investigated (Research.md topic 9) whether self-hosted Docker would satisfy the same requirements — findings suggest yes (bundled Postgres+pgvector, no tool-calling requirement) — but the switch has not been made, and evaluation is now paused (ADR-024) before it could be. Revisit before treating this candidate's results as comparable to `memora_mini`'s fully-local ones. |
+
+---
+
+## ADR-023 · `Customer_Support_Agent/` loads the repo-root `.env` explicitly, same pattern as `temp_graph`/`memora_mini`
+
+| Field | Detail |
+|---|---|
+| **Decision** | `Customer_Support_Agent/main.py` resolves the repo-root `.env` by absolute path (`Path(__file__).resolve().parent.parent / ".env"`) rather than relying on `load_dotenv()`'s default cwd-based search. |
+| **Date** | 2026-07-30 |
+| **Context** | Fixing BUG-003, where the default `load_dotenv()` call silently found nothing since `Customer_Support_Agent/` is a sibling, not a parent, of the repo-root `.env`. |
+| **Options Considered** | Give `Customer_Support_Agent/` its own `.env` copy · load the repo-root `.env` by absolute path. |
+| **Chosen Solution** | Load the repo-root `.env` explicitly. |
+| **Rationale** | Same reasoning as ADR-006: a single source of truth for shared credentials (`CUSTOM_API_BASE`/`CUSTOM_API_KEY`) avoids two copies drifting out of sync, now that `memora_mini` has also standardized on the repo-root `.env` (ADR-020's changelog). Establishes this as the repo-wide convention for every future candidate directory, not just a one-off fix. |
+| **Impact** | `Customer_Support_Agent/main.py:11`. Future candidate directories (Letta, Graphiti, etc.) should follow the same pattern rather than each inventing their own `.env` discovery. |
+
+---
+
+## ADR-024 · Pause external memory-library evaluation pending a local LLM upgrade decision
+
+| Field | Detail |
+|---|---|
+| **Decision** | Pause further candidate evaluation work in this repo (Mem0 or otherwise) until a decision is made on upgrading the local LLM server to a tool-calling-capable model. |
+| **Date** | 2026-07-30 |
+| **Context** | Tool-calling support (or its absence) has now shaped multiple candidates' outcomes: it categorically ruled out LangMem's SDK manager layer (ADR-010, via `trustcall`), and even where it isn't a hard requirement (Mem0's core pipeline — Research.md topic 9), enough adjacent tooling and provider-specific behavior assumes it that the current no-tool-calling local endpoint keeps becoming a recurring constraint to design around rather than a one-off blocker. |
+| **Options Considered** | Keep evaluating additional candidates (Graphiti, Letta, etc.) against the current no-tool-calling endpoint, designing around the constraint each time as done for LangMem/Mem0 · pause new candidate work and decide on a local LLM upgrade first, since a tool-calling-capable model would remove the constraint for every future candidate at once rather than one at a time. |
+| **Chosen Solution** | Pause; decide on the LLM upgrade first. |
+| **Rationale** | Working around the no-tool-calling constraint per candidate (ADR-010's `memora_mini` reimplementation, Mem0's JSON-only extraction path) is real, repeated engineering cost. If a tool-calling-capable local model is adopted, that cost disappears for every remaining candidate at once, so resolving the model question first is higher-leverage than continuing to evaluate against a constraint that may not exist much longer. |
+| **Impact** | No new candidate directories planned until this is decided. `memora_mini` (LangMem) and `Customer_Support_Agent/` (Mem0, first pass) are left in their current states — both already tested/working within their own scope, not blocked or broken by the pause. Revisit this ADR once the LLM upgrade decision is made, either resuming with Graphiti/Letta/etc. against an upgraded endpoint, or continuing the no-tool-calling-constrained approach deliberately. |
+
+---
