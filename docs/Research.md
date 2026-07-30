@@ -45,3 +45,51 @@
 | **Relevance to Project** | This mapping is the reason `temp_graph/` was scoped the way it is (see CLAUDE.md "What 'similar to my original one' means") and is the yardstick the next candidate's toy setup should be measured against for a fair comparison. |
 
 ---
+
+## 5. LangGraph `BaseStore` and production-persistent store options
+
+| Field | Detail |
+|---|---|
+| **Topic** | What "an officially supported persistent LangGraph store" actually means, and which concrete backends implement it, in the context of whether Memora's `learned_qa`/`failure_lessons`/`user_thumbdowns` could sit behind one instead of custom ChromaDB/MongoDB code. |
+| **Date** | 2026-07-29 |
+| **Findings** | A LangGraph `BaseStore` is a database-backed implementation of a standard four-verb API (`put`/`get`/`search`/`delete` over `(namespace, key, value)`) — LangMem's managers talk to *this* interface, not to a specific database. LangGraph's own documentation lists `PostgresStore`, `MongoDBStore` (via a separately maintained `langgraph-store-mongodb` package), and `RedisStore` as production-persistent implementations; `InMemoryStore` is dev/test-only (wiped on restart — this matches the tutorial's own caveat, topic 3). A store is distinct from a *checkpointer*: the store holds long-term, cross-thread memories; the checkpointer holds a single thread's resumable execution state (e.g. "which compression stage a query is on") — they answer different questions and are passed to `builder.compile()` separately. `MongoDBStore` was investigated in detail since Memora already runs MongoDB: it namespaces all memories into one collection (namespace as a field), supports metadata filtering out of the box, and can support semantic search *if* configured with an embedding model and a MongoDB Vector Search index (`create_vector_index_config`). |
+| **Conclusion** | Adopting a `BaseStore` would replace only the storage integration LangMem itself talks to, not automatically replace every existing collection — `feedback_interactions`/`user_thumbdowns`/`failed_variants` could stay as raw MongoDB evidence, with only the *derived*, LangMem-managed memories (`learned_qa`-equivalent, `failure_lessons`-equivalent) moving into the store. The advantage over a custom adapter is compatibility (LangMem's managers, and any future LangGraph tooling, work against it without bespoke glue) and not, on its own, better extraction quality or lower latency. |
+| **Relevance to Project** | Directly informs why `memora_mini`'s `MemoryStore` Protocol (Decisions.md ADR-011) is signature-compatible with `BaseStore` even though nothing here actually uses a `BaseStore` implementation: the compatibility is what would make a later real-store swap cheap. Superseded in practice by topic 6 below — the store question turned out to be moot once the semantic-search requirement ran into a hard constraint. |
+
+---
+
+## 6. MongoDB Atlas Vector Search feasibility vs. the no-cloud constraint — why Chroma stays
+
+| Field | Detail |
+|---|---|
+| **Topic** | Whether `MongoDBStore` could provide semantic search locally (the user's laptop MongoDB and free-tier Atlas plan), and whether it should replace ChromaDB for `memora_mini`'s memory namespaces. |
+| **Date** | 2026-07-29 |
+| **Findings** | A local Community-edition `mongod` replica set does **not** run `$vectorSearch` — that requires the separate `mongot` search process, which Community edition doesn't include; the user's laptop MongoDB was confirmed blocked on this basis. MongoDB Atlas's free M0 tier, however, *does* support Atlas Vector Search (with a limited index count) specifically to let users prototype RAG at zero cost — using it is a normal UI action, not "modifying the plan." Since `MongoDBStore` keeps all namespaces in a single collection with namespace as a metadata field, one vector index would cover all four memory namespaces (plus a second for the `documents` corpus), which fits inside M0's index-count limit. |
+| **Conclusion** | Atlas M0 is technically capable, but was rejected anyway: it is a cloud service, and the parent project's architecture already commits to a hard no-data-egress constraint (traces and logs must never leave the local network) because the corpus is domain-sensitive clinical data. Routing memory storage through a cloud vector index would contradict a constraint already made deliberately, even on a free tier — "sandbox habits become parent-project habits" was the explicit reasoning for not treating this as a one-off exception. ChromaDB (fully local, no server process required) was kept instead. |
+| **Relevance to Project** | This is *why* `memora_mini/store/chroma_store.py` exists at all instead of a `MongoDBStore`-backed implementation, and why "ChromaDB is the only datastore" became a hard constraint in the `memora_mini` build spec rather than an arbitrary preference. See Decisions.md ADR-019, ADR-020. |
+
+---
+
+## 7. `trustcall` — what it is, how LangMem depends on it, and why it disqualifies the SDK here
+
+| Field | Detail |
+|---|---|
+| **Topic** | What `trustcall` actually does inside LangMem's manager functions, and whether there is any way to use `create_memory_manager`/`create_memory_store_manager` without it. |
+| **Date** | 2026-07-29 |
+| **Findings** | `trustcall` is a small library (in the LangChain orbit) for reliable structured output via "tenacious tool calling": it binds a Pydantic schema as a tool, validates the model's tool-call output, and on failure feeds validation errors back for a repair round. Its actual mechanism is JSON Patch (RFC 6902) — repairs and updates are emitted as `{"op": "replace", "path": "/answer", ...}` patch operations against the existing document, not full regenerations, which is both cheap error recovery on long extractions and the mechanism LangMem's managers use to decide "patch an existing memory" vs. "insert a new one." Every step of this — the initial schema-as-tool binding, the patch tools, the repair loop — rides on tool-calling (`.bind_tools()` and internal patch-tool schemas). There is no plain-JSON fallback path documented or discoverable in the library. |
+| **Conclusion** | `create_memory_manager`/`create_memory_store_manager` cannot run against an endpoint with no tool-calling support — this is a hard dependency, not a configuration option. The only way to use LangMem "without trustcall" is to skip its manager layer entirely and reuse only its higher-level ideas (namespace conventions, the store shape), writing extraction/patch logic by hand — which is exactly what `memora_mini/memory/classify.py` + `apply.py` do: `classify.py` replaces trustcall's model-side judgment with a single-enum-token call (per ADR-013), and `apply.py` replaces its patch mechanism with a deterministic Python union (per ADR-014). |
+| **Relevance to Project** | This is the concrete, mechanism-level justification for Decisions.md ADR-010 (reject the SDK, reimplement natively). Also directly informed the parent project's LLM role decisions: Memora's own `agent_query.py` similarly relies on tool-calling for its ordinary tool-selection loop, and query-variant generation there was already deliberately moved off tool-calling for the same 8B-reliability reasons (parent project ADR-061, referenced from `../RAG-work`). |
+
+---
+
+## 8. ChromaDB CRUD capability audit
+
+| Field | Detail |
+|---|---|
+| **Topic** | Whether ChromaDB, used without any `BaseStore` wrapper, actually supports the full CRUD + partial-update surface a memory lifecycle needs (insert, hit-count bump without re-embedding, supersede, filtered recall, hard delete). |
+| **Date** | 2026-07-29 |
+| **Findings** | Confirmed directly (both by API inspection and by `memora_mini/store/chroma_store.py`'s own test suite): `collection.add`/`upsert` for inserts, `collection.update(ids=..., metadatas=...)` for metadata-only updates that do **not** re-embed (verified via `configuration_json` inspection and exercised live for `hit_count`/`last_hit_at` bumps), `collection.get(where=...)`/`collection.query(where=...)` for filtered and semantic recall respectively, and `collection.delete(ids=...)` for hard deletes. The one non-obvious API detail: Chroma requires an explicit `{"$and": [...]}` wrapper once a `where` filter has more than one condition — a single-condition filter can be passed bare. |
+| **Conclusion** | Every operation `memora_mini`'s memory lifecycle needs is available directly on a plain ChromaDB collection, with no `BaseStore` implementation required to get CRUD. What ChromaDB does *not* give you for free is `BaseStore` *compatibility* (LangGraph/LangMem tooling expecting that exact interface) — that has to be hand-written, which is what `store/protocol.py` + `store/chroma_store.py` are. |
+| **Relevance to Project** | Directly grounds `store/chroma_store.py::_build_where` (the `$and` handling) and confirms the metadata-only-update approach behind Decisions.md ADR-011/ADR-019's design; also the reason `memory/recall.py`'s hit-count bump was judged cheap enough to run on every single recall. |
+
+---

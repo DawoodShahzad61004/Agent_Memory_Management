@@ -84,3 +84,75 @@
   (all created this session); `README.md` updated next; `graphify-out/` knowledge graph to follow.
 
 ---
+
+#### 2026-07-29 — MongoDB/store investigation, then `temp_graph/` superseded by native `memora_mini`
+
+* Investigated whether Memora's memory layer could sit behind an officially-supported persistent LangGraph
+  `BaseStore` (`PostgresStore`, `MongoDBStore`, `RedisStore`) instead of custom ChromaDB/MongoDB code, with
+  `MongoDBStore` the leading candidate since Memora already runs MongoDB. Confirmed a local Community-edition
+  `mongod` cannot run `$vectorSearch` (needs the separate `mongot` process); confirmed MongoDB Atlas's free M0
+  tier technically *can* run Atlas Vector Search. Decided against it anyway — Atlas is cloud, and the parent
+  project's no-data-egress constraint rules out routing memory through any cloud service, free tier or not.
+  Decided to keep ChromaDB, and confirmed it already supports full CRUD (add/upsert/update/delete, metadata-only
+  update for cheap hit-count bumps) without needing a `BaseStore` wrapper at all. Tracked in: Research.md topics
+  5, 6, 8.
+* Deep-dived `trustcall`, the library LangMem's `create_memory_manager`/`create_memory_store_manager` depend on
+  internally: it does reliable structured output via tool-calling plus JSON-Patch-based repair/update. Confirmed
+  every step of that mechanism requires tool-calling, which Memora's actual LLM endpoint does not support (the
+  same reason the parent project's own ADR-061 dropped tool-calling from query-variant generation). This makes
+  the `langmem` SDK's manager layer categorically unusable here, not just inconvenient. Tracked in: Research.md
+  topic 7; Decisions.md ADR-010.
+* Set out to build **`memora_mini`**: a from-scratch reimplementation of LangMem's memory taxonomy
+  (episodic/semantic/procedural) and its `BaseStore`-shaped four-verb interface, with no `langmem` import
+  anywhere, as a sandbox/reference project inside `temp_graph/` (later promoted to repo root — see next entry).
+  Followed the prescribed working method: built `config.py`, `embeddings.py`, `store/protocol.py`,
+  `store/chroma_store.py`, `memory/recall.py` first, with `tests/test_store.py` + `tests/test_recall.py` green
+  (19 tests) before writing any LLM-touching code. Confirmed live, via direct ChromaDB API probing, that pinning
+  `hnsw:space="cosine"` on collection creation and asserting it on open works as intended, and that Chroma's
+  default space is L2 unless explicitly overridden — the exact failure mode Memora's own collection-creation bug
+  had exploited for months.
+* Built the LLM layer (`json_fix.py` — fence-strip → `json_repair` → Pydantic validate; `llm.py` — plain
+  chat-completions client, no `tools=`/`.bind_tools()` anywhere), then the three-stage memory pipeline
+  (`memory/extract.py`, `memory/classify.py`, `memory/apply.py`, `memory/reflect.py`), then the five-node
+  `StateGraph` (`graph/state.py`, `nodes.py`, `build.py`), then `ingest.py` plus five `corpus/` fixtures
+  (including a deliberate ASD-acronym collision across two documents), then `main.py` (CLI REPL) and `demo.py`
+  (scripted end-to-end walkthrough).
+* Verified: 56 tests passing after the core build, growing to 58 once semantic-facts seeding and procedural-
+  proposal coverage were added. Probed the real LLM endpoint (`CUSTOM_API_BASE`) directly — connection timed out,
+  so ran `demo.py` structurally against a fake-model harness instead. That run confirmed all nine of the build
+  spec's acceptance-criteria steps end to end: ingest → documents-only answer → dry-run `learn` (writes nothing)
+  → live `learn` (episodic populated) → a semantically different rephrasing still recalling the same episodic
+  memory → thumbdown-then-reword recalling failure memory with positive redirection in the prompt (the BUG-009
+  regression check) → four thumbdowns on one theme consolidating into a single active failure entry → a
+  contradicting interaction producing a `CONTRADICTS` verdict, a supersede, and a full audit-log entry → final
+  stats showing the active episodic count (4) below the raw candidate count (5).
+* Deleted `temp_graph/` entirely (all 12 modules plus its Chroma store, 1,446 lines) as fully superseded.
+  Renamed `memora_mini/README.md` → `temp_project_description.md` and `memora_mini/DECISIONS.md` →
+  `temp_decision_notedown.md`, pending consolidation into the repo's five-file `docs/` system.
+* Tracked in: `memora_mini/` (all ~25 files), `tests/` (6 test modules, 58 tests); Decisions.md ADR-010 through
+  ADR-019; Research.md topics 5-8.
+
+---
+
+#### 2026-07-30 — `memora_mini`/`tests` promoted to repo root; documentation consolidated
+
+* Moved `memora_mini/` and `tests/` from being `temp_graph/`-adjacent experiments to first-class top-level
+  directories at the repo root, alongside `LangMem/`. Updated `memora_mini/config.py::ENV_PATH` to load the
+  repo-root `.env` instead of `LangMem/.env`, and moved the active Python environment from `LangMem/.venv` to a
+  root-level `.venv/`. Re-ran the full test suite from the new location: all 58 tests still passed with no
+  further code changes needed; the only stale references found were setup commands in
+  `temp_project_description.md`, corrected to the new paths. Tracked in: Decisions.md ADR-020.
+* Consolidated documentation onto `memora_mini` as the current state of the LangMem evaluation: rewrote
+  `docs/Architecture.md`, `docs/Decisions.md`, `docs/Research.md`, `docs/Bugs.md`, and this file, using
+  `Chat 33 (July 29).txt`, every current `memora_mini/` module, and `temp_project_description.md`/
+  `temp_decision_notedown.md` as source material — the `temp_graph/`-only content these files previously held is
+  now marked historical/superseded rather than deleted outright, so the reasoning trail stays intact.
+* Fixed BUG-001 for `README.md`: rewrote it from scratch and verified byte-for-byte that it now saves as plain
+  UTF-8 (previously UTF-16LE with no BOM). `LangMem/requirements.txt` was left as-is — out of scope, since it
+  belongs to now-reference-only tutorial material rather than the active package.
+* Deleted `memora_mini/temp_project_description.md` and `memora_mini/temp_decision_notedown.md` once their
+  content was folded into `docs/`, leaving a single documentation set. Regenerated `graphify-out/` (repo root
+  only) against the updated tree.
+* Tracked in: `docs/*.md` (all five updated), `README.md` (rewritten), `graphify-out/` (regenerated).
+
+---

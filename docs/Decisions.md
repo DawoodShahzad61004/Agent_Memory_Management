@@ -123,3 +123,147 @@
 | **Impact** | `temp_graph/learning.py`'s `record_accepted()`/`record_rejected()` only ever add new memories; there is currently no path for LangMem to merge, update, or remove an existing `learned_qa`/`failure_lessons` entry. Revisit if/when this experiment needs to demonstrate LangMem's consolidation behavior specifically. |
 
 ---
+
+## ADR-010 · Reject the `langmem` SDK's manager layer; reimplement its taxonomy natively as `memora_mini`
+
+| Field | Detail |
+|---|---|
+| **Decision** | Stop building on `langmem.create_memory_manager()`/`create_memory_store_manager()`. Adopt LangMem's memory taxonomy (episodic/semantic/procedural) and its `BaseStore`-shaped four-verb interface, but implement both from scratch in a new package, `memora_mini/`. Do not import or install `langmem`. |
+| **Date** | 2026-07-29 |
+| **Context** | `temp_graph/` (ADR-009) proved the basic contract works, but a deeper investigation (`Chat 33 (July 29).txt`; Research.md topic 7) established that `create_memory_manager`/`create_memory_store_manager` are built on `trustcall`, which is built on tool-calling (`.bind_tools()`, internal patch-tool schemas). Memora's actual production LLM endpoint is a self-hosted OpenAI-compatible server with **no tool-calling support**, which was already the reason ADR-061 (parent project) removed tool-calling from query-variant generation. |
+| **Options Considered** | (a) Keep using `create_memory_manager` as-is · (b) build a shim that fakes tool-calling on top of the plain-JSON endpoint so `trustcall` still works · (c) adopt LangMem's taxonomy and store-interface *shape* only, and implement extraction/classification/apply natively · (d) drop LangMem entirely and design a memory system from scratch, uninformed by it. |
+| **Chosen Solution** | (c) |
+| **Rationale** | (a) is simply unavailable against this endpoint. (b) means maintaining a compatibility shim against two upstream libraries (`langmem` and `trustcall`) just to reach an abstraction the project would still have to debug from the outside — worse than owning the code directly. (d) throws away a taxonomy (episodic/semantic/procedural, `BaseStore`'s verb shape) that is a demonstrably better fit than Memora's current ad-hoc three-collection split, for no benefit. The ideas from LangMem are portable even though the package is not. |
+| **Impact** | `temp_graph/` (the `langmem`-dependent prototype) was deleted entirely. `memora_mini/` — ~900 lines across `store/`, `memory/`, `graph/` — is built to reach the same evaluation goal without the dependency. Every subsequent decision below (ADR-011 through ADR-020) is a design choice made inside that reimplementation. |
+
+---
+
+## ADR-011 · Store interface signatures held byte-compatible with LangGraph `BaseStore`
+
+| Field | Detail |
+|---|---|
+| **Decision** | `memora_mini/store/protocol.py`'s `MemoryStore` Protocol uses exactly `BaseStore`'s four verb names, parameter ordering, and keyword-only markers (`put`, `get`, `search(*, query, filter, limit)`, `delete`). |
+| **Date** | 2026-07-29 |
+| **Options Considered** | A Protocol shaped only for what this code actually needs (e.g. `search(ns, query, k)`, simpler) · a literal `BaseStore` subclass (drags in LangGraph's async surface and `Op`/batch machinery for no benefit here) · a signature-compatible Protocol. |
+| **Chosen Solution** | Signature-compatible Protocol. |
+| **Rationale** | A Protocol shaped only for this code's own needs would make a later swap to a real `BaseStore` a rewrite of every call site. Matching signatures costs one awkward parameter (`filter` shadows the builtin) and buys a genuine drop-in path: if a tool-calling-capable model becomes available later, a thin `BaseStore` subclass over the same Chroma collections lets LangMem's managers attach without touching a single caller. |
+| **Impact** | `store/protocol.py`. Pinned by `tests/test_store.py::test_store_satisfies_the_protocol`, which asserts the parameter list rather than relying on duck-typing alone. |
+
+---
+
+## ADR-012 · Supersede, not delete, as the memory lifecycle
+
+| Field | Detail |
+|---|---|
+| **Decision** | Superseding a memory sets `active=False` and `superseded_by=<new_key>` on the old record and inserts a new one. `delete()` exists on the store interface but is for operator cleanup only — the write pipeline never calls it. All recall filters `active=True` by default. |
+| **Date** | 2026-07-29 |
+| **Options Considered** | Hard delete on contradiction · in-place update of the existing record · supersede-with-tombstone · versioned records with an explicit generation counter. |
+| **Chosen Solution** | Supersede with tombstone. |
+| **Rationale** | The failure mode being designed against is a *wrong classification*, not a wrong memory — the classifier is an 8B model. A hard delete makes a bad `CONTRADICTS` verdict unrecoverable, which is the insert-only problem (that this whole reimplementation exists to fix) inverted into an equally permanent mistake. In-place update loses the old text, so an audit log can't show what changed. Tombstones cost only storage, which is free in this sandbox. |
+| **Impact** | Every namespace carries `active`/`superseded_by`. Storage grows monotonically — acceptable here; a periodic hard-delete sweep over long-superseded records is the obvious production follow-up if this ports back to Memora. |
+
+---
+
+## ADR-013 · Classification is per-pair and single-token
+
+| Field | Detail |
+|---|---|
+| **Decision** | `memory/classify.py` makes one LLM call per `(candidate, neighbour)` pair, and that call returns exactly one of four enum tokens (`DUPLICATE`/`CONTRADICTS`/`REFINES`/`UNRELATED`). |
+| **Date** | 2026-07-29 |
+| **Options Considered** | One call classifying a candidate against all of its neighbours at once · one call doing extract + reconcile + merge together, i.e. what `create_memory_manager` itself does · one call per pair, single token. |
+| **Chosen Solution** | Per-pair, single-token. |
+| **Rationale** | Against an 8B model, a call that must align a candidate with several neighbours *and* emit structured output fails in ways that are hard to attribute to a specific cause. A single token has exactly one failure mode — unrecognised text — with an obvious, safe fallback (`UNRELATED` → insert). The cost is `candidates × CLASSIFY_NEIGHBOURS` calls per interaction, acceptable because reflection runs offline, never in the request path. |
+| **Impact** | `memory/classify.py`; `strongest()` resolves disagreement across neighbours by priority (`CONTRADICTS` > `REFINES` > `DUPLICATE`). If a stronger model becomes available later, a batched form is a strictly cheaper drop-in and only this module would change. |
+
+---
+
+## ADR-014 · `REFINES` merges deterministically in Python, never via an LLM call
+
+| Field | Detail |
+|---|---|
+| **Decision** | The merged record produced by a `REFINES` supersede is a plain Python union — concatenate text, union list fields, take `max()` confidence, preserve `hit_count` — with no LLM call anywhere in `apply.py`. |
+| **Date** | 2026-07-29 |
+| **Options Considered** | An LLM call producing a clean, synthesised merged answer · a deterministic Python union · keep both records separately and let recall's ranking sort it out. |
+| **Chosen Solution** | Deterministic Python union. |
+| **Rationale** | The constraint that `apply.py` is the *only* module that writes memory is only meaningful if `apply.py` cannot fail nondeterministically. Putting an LLM merge call inside the write path reintroduces exactly the nondeterminism that constraint exists to remove. The cost is uglier merged text (two concatenated answers rather than one synthesised one), which recall tolerates fine because matching happens on embeddings, not surface text. |
+| **Impact** | `memory/apply.py::_merge`. There is deliberately no merge prompt in `prompts.py`. If merged entries visibly degrade answer quality, the fix is to move an LLM merge step into `classify.py`, passing pre-merged text into `plan()` — not to add one to `apply.py`. |
+
+---
+
+## ADR-015 · Semantic memory is curated by hand, not extracted automatically
+
+| Field | Detail |
+|---|---|
+| **Decision** | No automatic extraction path writes to the `semantic` namespace. Facts are seeded from `facts.py` (`SEED_FACTS`) and added at runtime only via the REPL's `fact` command. |
+| **Date** | 2026-07-29 |
+| **Options Considered** | Mine facts from the corpus automatically at ingest time · extract facts during reflection alongside episodic memories · curate them by hand. |
+| **Chosen Solution** | Curate by hand. |
+| **Rationale** | Asked to mine "domain facts" from a chunk, an 8B model restates whatever it just read, which duplicates the `documents` collection into a namespace that then outranks it in the generation prompt. The facts actually worth this namespace's existence — the ASD acronym collision, the evidence-grade rule — require knowing something about the corpus *as a whole*, which single-chunk extraction structurally cannot see. |
+| **Impact** | `facts.py`, `memora_mini/corpus/`. The semantic namespace stays small and hand-owned. If the corpus grows, a corpus-wide disambiguation pass (clustering acronyms with divergent neighbour clusters) is the natural automation path — a clustering job, not an LLM-per-chunk job. |
+
+---
+
+## ADR-016 · Procedural memory is proposed deterministically and never auto-applied
+
+| Field | Detail |
+|---|---|
+| **Decision** | When an active failure memory's `hit_count` reaches `PROCEDURAL_PROPOSAL_HITS`, reflection emits a `PromptRevision` with `approved=False`. Nothing in the query graph reads the `procedural` namespace. |
+| **Date** | 2026-07-29 |
+| **Options Considered** | An LLM call proposing prompt revisions · a deterministic proposal derived from a recurring-failure-theme threshold · auto-apply approved revisions at generation time · no procedural memory at all. |
+| **Chosen Solution** | Deterministic proposal from a threshold, never applied. |
+| **Rationale** | A system that rewrites its own system prompt from 8B-model output has no stable baseline left to evaluate against — which defeats the point of a comparison sandbox. Emitting the proposal is still worth doing: it surfaces "this failure theme keeps recurring" as a reviewable artifact. Deriving the trigger from a `hit_count` threshold rather than an LLM judgment keeps it free, deterministic, and reproducible. |
+| **Impact** | `memory/reflect.py::propose_prompt_revisions`. Pinned by `tests/test_reflect.py::test_procedural_memory_is_never_injected_into_generation`. Wiring an approval workflow into actual generation is left as a deliberate, separate decision for whoever ports this into Memora. |
+
+---
+
+## ADR-017 · Failure injection carries derived `missing_information`, capped at 2, phrased positively
+
+| Field | Detail |
+|---|---|
+| **Decision** | Prompt injection for failure memory uses a derived `missing_information` noun phrase — never the raw `user_feedback` text — phrased as positive redirection ("prior attempts missed X; seek and state X"), capped at `MAX_FAILURE_INJECTIONS = 2` and selected by strength score. |
+| **Date** | 2026-07-29 |
+| **Options Considered** | Inject raw `user_feedback` verbatim, which is what Memora's current `user_thumbdowns`/`failed_variants` injection does · inject a "do not do X" blocklist · inject the derived `missing_information` field as positive redirection. |
+| **Chosen Solution** | Derived `missing_information`, positive phrasing, capped. |
+| **Rationale** | Raw feedback is a complaint aimed at a person — the wrong shape for redirecting retrieval, and it drags tone and irrelevant detail into the prompt. Negative-only phrasing ("do not omit dosing") measurably fails to change small-model behaviour; positive redirection is the form that actually works. The cap exists because embedding-based recall surfaces far more failure hits than Memora's exact-string match ever did, and Memora's own pipeline already hit prompt-bloat problems past roughly 1,800 tokens against an 8B instruction-following ceiling. |
+| **Impact** | `memory/schemas.py::FailureMemory.missing_information`, `prompts.REDIRECTION_LINE`/`REDIRECTION_BLOCK`, `graph/nodes.py::generate`. Pinned by `tests/test_graph.py` (cap honoured; raw feedback text never reaches the prompt). |
+
+---
+
+## ADR-018 · Cosine is asserted on open, not migrated
+
+| Field | Detail |
+|---|---|
+| **Decision** | `store/chroma_store.py::open_collection()` pins `hnsw:space="cosine"` on every `get_or_create_collection` call and raises `RuntimeError` if an opened collection reports any other space. |
+| **Date** | 2026-07-29 |
+| **Options Considered** | Assert and fail loudly · snapshot-and-rebuild migration logic, mirroring `../RAG-work/app_workflow/services/learned_qa_store.py` · compute distance-appropriate scores per collection at each call site. |
+| **Chosen Solution** | Assert and fail loudly. |
+| **Rationale** | This sandbox has no legacy data, so migration code here could never actually be exercised, and untested migration code cannot be trusted. Per-collection score handling would spread the assumption `score = 1 - distance` across every call site — exactly the pattern that let Memora's own L2-vs-cosine bug silently corrupt ranking for months. One factory, one assertion, one place to look. |
+| **Impact** | `store/chroma_store.py::open_collection` is the only code path in the package that creates a collection. **When porting this back to Memora, keep Memora's existing migration logic instead** — it handles real pre-existing data that this assertion would simply reject. |
+
+---
+
+## ADR-019 · Interactions are buffered in Chroma; the audit trail is a JSONL log, not a memory namespace
+
+| Field | Detail |
+|---|---|
+| **Decision** | Pending (not-yet-reflected) interactions live in a Chroma collection (`("memora", DOMAIN, "interactions")`) that is explicitly *not* one of the four memory namespaces. Proposed and applied memory operations are appended to `memory_audit.jsonl` on disk, not stored in Chroma. |
+| **Date** | 2026-07-29 |
+| **Options Considered** | Interactions in MongoDB, mirroring Memora's own behavior · interactions as a fifth memory namespace · interactions in a non-memory Chroma collection, with the audit trail also in Chroma · interactions in Chroma, audit trail as an append-only JSONL file. |
+| **Chosen Solution** | Non-memory Chroma collection for interactions; JSONL file for the audit trail. |
+| **Rationale** | MongoDB is excluded by the sandbox's hard constraint (ChromaDB is the only datastore). Making interactions a memory namespace would let raw, unclassified interactions leak into recall alongside actual memories. The audit trail is append-only, read only by humans, and never read back by any code path for behaviour — a log sink, not a datastore — so embedding it into a vector store would buy nothing and would require embedding text nobody ever searches. |
+| **Impact** | `store/namespaces.py::INTERACTIONS`, `memory/apply.py::_audit`, `config.AUDIT_LOG_PATH`. This is the one place the "ChromaDB only" rule is interpreted rather than followed literally — flagged here deliberately, since it is exactly the kind of choice a reviewer should push back on. |
+
+---
+
+## ADR-020 · Delete `temp_graph/` entirely; promote `memora_mini/` to a first-class repo-root package
+
+| Field | Detail |
+|---|---|
+| **Decision** | Remove `temp_graph/` (all 12 modules and its Chroma store) rather than keep it as historical reference, and move `memora_mini/` (and its `tests/`) out from being a `temp_graph/`-adjacent experiment into a top-level directory at the repo root, alongside `LangMem/`. |
+| **Date** | 2026-07-29 / 2026-07-30 |
+| **Options Considered** | Keep `temp_graph/` around as a dead-but-documented historical artifact · keep `memora_mini/` nested under/alongside `temp_graph/` · delete `temp_graph/` and promote `memora_mini/` to repo root. |
+| **Chosen Solution** | Delete `temp_graph/`; promote `memora_mini/` to repo root. |
+| **Rationale** | `memora_mini/` doesn't just replace `temp_graph/`'s functionality — it exists specifically *because* `temp_graph/`'s core approach (the `langmem` SDK's manager layer) turned out to be unusable against Memora's real constraints (ADR-010). Keeping a dead prototype around that took a rejected approach added confusion without adding evaluation value; the reasoning is fully captured in ADR-010 and Research.md topic 7 instead. Since `memora_mini/` no longer depends on anything under `LangMem/` except its `.env` file's contents, keeping it nested added a layer of indirection with no benefit. |
+| **Impact** | `temp_graph/` no longer exists in the repo (1,446 lines removed). `memora_mini/config.py::ENV_PATH` now resolves the repo-root `.env` instead of `LangMem/.env`; the active environment moved from `LangMem/.venv` to a root-level `.venv/`. All 58 tests were re-verified passing from the new location with no further code changes needed. `memora_mini/`'s own `README.md`/`DECISIONS.md` were renamed to `temp_project_description.md`/`temp_decision_notedown.md` and, once folded into this five-file `docs/` system, deleted (see ADR-010's changelog entry in Architecture.md and Status.md, 2026-07-30). |
+
+---
