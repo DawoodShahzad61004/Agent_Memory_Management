@@ -157,11 +157,11 @@
 
 ---
 
-#### 2026-07-30 — Mem0 selected as second candidate; `Customer_Support_Agent/` wired against the hosted Platform client
+#### 2026-07-30 — Mem0 selected as second candidate; `Sample_Coding_Agent/` wired against the hosted Platform client
 
 * Selected **Mem0** as the second candidate to evaluate, per the queued order from Research.md topic 1 / ADR-004,
   now that LangMem/`memora_mini` had reached a stable, tested state (ADR-020).
-* Built `Customer_Support_Agent/main.py`: a single-file LangGraph chatbot with one `chatbot` node that searches
+* Built `Sample_Coding_Agent/main.py`: a single-file LangGraph chatbot with one `chatbot` node that searches
   Mem0 (`mem0.search(..., filters={"user_id": user_id})`), builds a system-prompt context from the results, calls
   the LLM, and writes the turn back via `mem0.add()`. Set up its own `uv`-managed `.venv` (`mem0ai`, `langgraph`,
   `langchain-openai`, `python-dotenv`).
@@ -172,7 +172,7 @@
   Not fixed at the network level — left open, since a public-resolver change (8.8.8.8/1.1.1.1) was offered but
   not actioned.
 * Also found `.env` wasn't loading: `main.py` called `load_dotenv()` with no path, and the actual `.env` lives at
-  the repo root, a level above `Customer_Support_Agent/` — same layout `temp_graph/` hit (ADR-006). Fixed by
+  the repo root, a level above `Sample_Coding_Agent/` — same layout `temp_graph/` hit (ADR-006). Fixed by
   resolving the repo-root `.env` explicitly by absolute path (BUG-003, now standardized as ADR-023).
 * Asked whether self-hosting Mem0 via Docker would resolve the DNS crash: partially — it would remove the
   `api.mem0.ai` dependency specifically, but not `CUSTOM_API_BASE` (the LLM endpoint) or any other external call
@@ -194,7 +194,7 @@
   space (no episodic/semantic/failure split, no accept/reject step) — a thinner mapping onto Memora's four-role
   architecture (ADR-003) than `memora_mini` provides; extending it is the open next step before Mem0 can be
   fairly compared.
-* Tracked in: `Customer_Support_Agent/` (`main.py`, `run_log.txt`, `.venv`); Architecture.md (new Mem0 candidate
+* Tracked in: `Sample_Coding_Agent/` (`main.py`, `run_log.txt`, `.venv`); Architecture.md (new Mem0 candidate
   section); Bugs.md BUG-002 through BUG-005; Decisions.md ADR-021 through ADR-023; Research.md topic 9;
   `README.md` updated; `graphify-out/` regenerated.
 
@@ -209,7 +209,7 @@
   candidate.
 * Upgrading the local LLM server to a tool-calling-capable model is under consideration, which would remove this
   constraint for future candidates — not yet decided.
-* No further candidate work (Mem0 or otherwise) planned until that decision is made. `Customer_Support_Agent/`'s
+* No further candidate work (Mem0 or otherwise) planned until that decision is made. `Sample_Coding_Agent/`'s
   Mem0 first pass (BUG-002 through BUG-005) and `memora_mini`'s LangMem reimplementation both remain in their
   current, already-tested states — nothing here needs to be rolled back, just picked back up later.
 * Tracked in: Decisions.md ADR-024; `README.md` "Current state" updated to reflect the pause.
