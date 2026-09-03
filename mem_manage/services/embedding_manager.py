@@ -5,7 +5,7 @@ import time
 import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
-from app_workflow.config import EMBEDDING_ENCODING_TIMEOUT_SECONDS
+from ..config import EMBEDDING_ENCODING_TIMEOUT_SECONDS, EMBEDDING_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class EmbeddingEncodingTimeoutError(Exception):
 
 
 class EmbeddingManager:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = EMBEDDING_MODEL_NAME):
         self.model_name = model_name
         self.model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -88,7 +88,3 @@ class EmbeddingManager:
         if np.linalg.norm(vec_a) == 0 or np.linalg.norm(vec_b) == 0:
             return 0.0
         return float(np.dot(vec_a, vec_b) / (np.linalg.norm(vec_a) * np.linalg.norm(vec_b)))
-
-
-from .operation_tracing import instrument_namespace as _instrument_namespace
-_instrument_namespace(globals(), "Embeddings")

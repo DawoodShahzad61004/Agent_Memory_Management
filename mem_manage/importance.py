@@ -15,12 +15,13 @@ Each factor takes the record plus whatever cross-record context it needs
 from __future__ import annotations
 
 import math
-import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Sequence
+
+from . import config
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ def parse_episodic_md(text: str) -> list[EpisodicRecord]:
     records: list[EpisodicRecord] = []
     # Split right before each '## ' so every chunk keeps its own header +
     # body together; a lookahead split (vs. a plain split) doesn't eat the delimiter.
-    blocks = re.split(r"\n(?=## )", text.strip())
+    blocks = config.EPISODIC_BLOCK_SPLIT_PATTERN.split(text.strip())
     for block in blocks:
         block = block.strip()
         if not block.startswith("## "):
@@ -56,7 +57,7 @@ def parse_episodic_md(text: str) -> list[EpisodicRecord]:
         date_str, time_str, _sep, tag = parts
         try:
             timestamp = datetime.strptime(
-                f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%SZ"
+                f"{date_str} {time_str}", config.EPISODIC_TIMESTAMP_FORMAT
             ).replace(tzinfo=timezone.utc)
         except ValueError:
             continue  # header shape matched but the timestamp didn't parse - skip, don't crash the batch
@@ -71,7 +72,10 @@ def _similarity(a: str, b: str) -> float:
 
 
 def f_recency(
-    record: EpisodicRecord, *, now: datetime | None = None, half_life_hours: float = 168.0
+    record: EpisodicRecord,
+    *,
+    now: datetime | None = None,
+    half_life_hours: float = config.RECENCY_HALF_LIFE_HOURS,
 ) -> float:
     """Exponential decay from the record's timestamp. 168h (paper's own
     maturation half-life) is a starting point, not a settled constant."""
@@ -86,7 +90,7 @@ def f_frequency(
     record: EpisodicRecord,
     corpus: Sequence[EpisodicRecord],
     *,
-    similarity_threshold: float = 0.6,
+    similarity_threshold: float = config.FREQUENCY_SIMILARITY_THRESHOLD,
 ) -> float:
     """Inverse frequency of similar events. 'Similar' = same tag (same
     recurring task/event category) or near-duplicate content, so repeated
@@ -117,18 +121,10 @@ def f_surprise(record: EpisodicRecord, corpus: Sequence[EpisodicRecord]) -> floa
     return 1.0 - max_sim  # closest prior match sets the floor; distance from it is the surprise
 
 
-_ENTITY_PATTERN = re.compile(
-    r"`([^`]+)`"                                       # backtick code spans
-    r"|\b([A-Z][a-zA-Z0-9]*(?:[A-Z][a-zA-Z0-9]*)+)\b"   # CamelCase / PascalCase
-    r"|\b([A-Z]{1,6}-\d+)\b"                            # ticket-style tags, e.g. T-001
-    r"|\b(\w+\.\w+(?:\.\w+)*)\b"                        # dotted filenames/paths
-)
-
-
 def extract_entities(text: str) -> set[str]:
-    # Each alternative above captures into its own group; exactly one group
-    # is non-None per match, so take whichever one actually fired.
-    return {next(g for g in match.groups() if g) for match in _ENTITY_PATTERN.finditer(text)}
+    # Each alternative in config.ENTITY_PATTERN captures into its own group;
+    # exactly one group is non-None per match, so take whichever one fired.
+    return {next(g for g in match.groups() if g) for match in config.ENTITY_PATTERN.finditer(text)}
 
 
 def build_entity_index(corpus: Sequence[EpisodicRecord]) -> dict[str, float]:
@@ -156,18 +152,11 @@ def f_entity_salience(
     return max(entity_index.get(entity, default) for entity in entities)  # one salient entity is enough to lift the record
 
 
-# Deliberately short marker lists, not an NLP classifier - this is a cheap
-# heuristic for logs that carry no separate status field, tuned for CI/agent
-# run output specifically (exit codes, test verbs), not general prose.
-DEFAULT_FAILURE_MARKERS = ("failed", "error", "not recognized", "exit 1", "traceback")
-DEFAULT_SUCCESS_MARKERS = ("passed", "success", "resolved", "fixed", "works")
-
-
 def f_outcome(
     record: EpisodicRecord,
     *,
-    success_markers: Sequence[str] = DEFAULT_SUCCESS_MARKERS,
-    failure_markers: Sequence[str] = DEFAULT_FAILURE_MARKERS,
+    success_markers: Sequence[str] = config.DEFAULT_SUCCESS_MARKERS,
+    failure_markers: Sequence[str] = config.DEFAULT_FAILURE_MARKERS,
 ) -> float:
     """Goal completion signal, read off the record's own text since these
     logs carry no separate status field. No markers of either kind (e.g. a
@@ -189,8 +178,6 @@ def f_outcome(
 # importance once, at formation time. This runs repeatedly afterward and
 # governs how that importance fades - or doesn't - with time and use.
 
-DEFAULT_DECAY_LAMBDA = 0.001  # per hour; paper's calibration, ln(2)/lambda =~ 693h =~ 29-day half-life
-
 
 def passive_decay(
     importance: float,
@@ -198,7 +185,7 @@ def passive_decay(
     *,
     now: datetime | None = None,
     last_accessed_at: datetime | None = None,
-    lambda_: float = DEFAULT_DECAY_LAMBDA,
+    lambda_: float = config.DECAY_LAMBDA_PER_HOUR,
 ) -> float:
     """I(t) = I0 * e^(-lambda * t), t in hours since the record was last
     *touched*. A retrieval resets the clock (pass its timestamp as
@@ -215,11 +202,6 @@ def passive_decay(
 
 
 # --- Composing the five factors into one score (Formulae row 1) -----------
-
-WEIGHTS = {"recency": 0.25, "frequency": 0.25, "surprise": 0.20, "entity": 0.15, "outcome": 0.15}
-# Principle 6: an explicitly stated fact starts from a higher initial score,
-# not just a slower decay rate later - this is where that boost is applied.
-EXPLICIT_PROVENANCE_BOOST = 0.2
 
 
 def composite_importance(
@@ -239,7 +221,7 @@ def composite_importance(
         "entity": f_entity_salience(record, entity_index),
         "outcome": f_outcome(record),
     }
-    score = sum(WEIGHTS[key] * value for key, value in factors.items())
+    score = sum(config.IMPORTANCE_WEIGHTS[key] * value for key, value in factors.items())
     if record.provenance == "explicit":
-        score *= 1 + EXPLICIT_PROVENANCE_BOOST
+        score *= 1 + config.EXPLICIT_PROVENANCE_BOOST
     return min(1.0, score)  # the boost can push the weighted sum past 1.0; clamp to keep the scale meaningful

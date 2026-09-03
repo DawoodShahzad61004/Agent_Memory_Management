@@ -1,209 +1,204 @@
+"""Near-duplicate grouping (embeddings) and merging (LLM-assisted, with a
+deterministic fallback) over DurableMemory records.
+
+Rewritten from the RAG-work sibling project's version, which grouped
+LangGraph retrieval chunks (`GraphState`, `nodes.nac._merge_similar_chunks`,
+`validators.validate_merge`, `switches`, `timing_tracker`) - none of which
+exist here. The grouping *pattern* (embed once, pairwise cosine similarity
+against each group's anchor, threshold cutoff) carries over; everything
+downstream of it is new, built for DurableMemory instead of retrieval chunks.
+
+merge_group() always computes the deterministic union first - the ADR-014
+precedent this repo's own memora_mini established, so a merge can never fail
+to produce *something* even if the LLM is disabled, unreachable, or its
+output is judged unfaithful. The LLM path, when it succeeds and passes
+judge_call, replaces just the merged content.
+"""
+from __future__ import annotations
+
 import logging
-import time
-from state import GraphState
-from app_workflow.services.llm_setup import llm, judge_llm
-from app_workflow.services.services import embedding_manager
-from app_workflow.services.validators import validate_merge
-from app_workflow.services.timing_tracker import timing_tracker
-from app_workflow.services.switches import get_switches
-from app_workflow.config import MERGE_SIMILARITY_THRESHOLD
+from dataclasses import replace
+from typing import Callable, Sequence
+
+from .. import config
+from ..memory import DurableMemory, content_id
 
 logger = logging.getLogger(__name__)
 
+LLMCall = Callable[[list[dict]], "str | None"]
 
-def _run_dedup_merge(
-    track_name: str,
-    input_chunks: list[dict],
-    switches: dict,
-    config=None,
-) -> tuple[list[dict], list[dict]]:
-    """Deduplicate and merge near-duplicate chunks within one track.
 
-    Returns (result_chunks, merge_pairs).  When ENABLE_RETRIEVAL_DEDUP_MERGE
-    is False the input is returned unchanged and merge_pairs is empty.
-    """
-    if not input_chunks:
-        logger.debug("[DEDUP_MERGE_%s] no chunks — skipping", track_name.upper())
-        return [], []
-
-    if not switches["ENABLE_RETRIEVAL_DEDUP_MERGE"]:
-        logger.debug(
-            "[DEDUP_MERGE_%s] disabled — passing through %d chunk(s)",
-            track_name.upper(), len(input_chunks),
-        )
-        return list(input_chunks), []
-
-    # Embed every chunk for pairwise cosine comparison
-    chunks_with_emb: list[dict] = []
-    for c in input_chunks:
-        content = (c.get("content") or "").strip()
-        if not content:
-            continue
-        emb = embedding_manager.generate_embedding(content)
-        chunks_with_emb.append({**c, "embedding": emb})
-
-    # Identify near-duplicate groups
+def find_near_duplicate_groups(
+    memories: Sequence[DurableMemory], embedder, threshold: float
+) -> list[list[int]]:
+    """Group indices into `memories` by pairwise cosine similarity against
+    each group's anchor (the first unclaimed index) - not transitive
+    closure, matching the original RAG pattern this was adapted from.
+    Singleton groups (no duplicate found) are included too, so callers have
+    one uniform list of groups to merge/pass through."""
+    if not memories:
+        return []
+    embeddings = embedder.generate_embedding([m.content for m in memories])
     claimed: set[int] = set()
-    merge_groups: list[list[int]] = []
-    for i in range(len(chunks_with_emb)):
+    groups: list[list[int]] = []
+    for i in range(len(memories)):
         if i in claimed:
             continue
         group = [i]
-        for j in range(i + 1, len(chunks_with_emb)):
+        for j in range(i + 1, len(memories)):
             if j in claimed:
                 continue
-            sim = embedding_manager.cosine_similarity(
-                chunks_with_emb[i]["embedding"],
-                chunks_with_emb[j]["embedding"],
-            )
-            if sim >= MERGE_SIMILARITY_THRESHOLD:
+            similarity = embedder.cosine_similarity(embeddings[i], embeddings[j])
+            if similarity >= threshold:
                 group.append(j)
                 claimed.add(j)
-        if len(group) > 1:
-            claimed.add(i)
-            merge_groups.append(group)
+        claimed.add(i)
+        groups.append(group)
+    return groups
 
-    logger.debug(
-        "[DEDUP_MERGE_%s] %d chunk(s) → %d merge group(s) (threshold=%.2f)",
-        track_name.upper(), len(chunks_with_emb), len(merge_groups), MERGE_SIMILARITY_THRESHOLD,
+
+def _deterministic_union(group: Sequence[DurableMemory]) -> DurableMemory:
+    """Plain Python union, no LLM: concatenate distinct text, earliest
+    created_at, latest last_accessed_at (so a reinforced memory decays
+    slower - see consolidate.refresh_decay), max importance, explicit
+    provenance wins if any member has it."""
+    ordered = sorted(group, key=lambda memory: memory.importance, reverse=True)
+    keeper = ordered[0]
+    content = "\n---\n".join(dict.fromkeys(memory.content for memory in ordered))
+    return DurableMemory(
+        id=content_id(content),
+        content=content,
+        tag=keeper.tag,
+        created_at=min(memory.created_at for memory in ordered),
+        last_accessed_at=max(memory.last_accessed_at for memory in ordered),
+        importance=max(memory.importance for memory in ordered),
+        provenance="explicit" if any(memory.provenance == "explicit" for memory in ordered) else "inferred",
+        merged_from=[source_id for memory in ordered for source_id in memory.merged_from],
     )
 
-    # Lazy import avoids circular dependency at module load time
-    from nodes.nac import _merge_similar_chunks
 
-    merge_pairs: list[dict] = []
-    indices_to_drop: set[int] = set()
+_MERGE_PROMPT = """You are consolidating {count} near-duplicate entries from an agent's episodic \
+memory log into a single durable memory. The entries were already judged near-duplicate by \
+embedding similarity - your job is to fold them into ONE statement that keeps every distinct fact \
+and drops repetition. Do not add anything the entries don't say.
 
-    for group in merge_groups:
-        keeper_idx = group[0]
-        source_chunks = [chunks_with_emb[i] for i in group]
-        merged = _merge_similar_chunks(
-            source_chunks,
-            llm,
-            embedding_manager,
-            output_fix_enabled=switches["ENABLE_RETRIEVAL_DEDUP_MERGE_OUTPUT_FIX"],
-            switches=switches,
-            config=config,
-        )
-        chunks_with_emb[keeper_idx] = merged
-        merge_pairs.append({"source_chunks": source_chunks, "merged": merged})
-        indices_to_drop.update(group[1:])
-        logger.info(
-            "[DEDUP_MERGE_%s] merged %d near-duplicate chunk(s) from: %s",
-            track_name.upper(), len(group),
-            [chunks_with_emb[i].get("source", "?") for i in group],
-        )
+Respond with ONLY the merged text - no preamble, no labels, no surrounding quotes.
 
-    result_chunks: list[dict] = []
-    for i, c in enumerate(chunks_with_emb):
-        if i in indices_to_drop:
-            continue
-        clean: dict = {"content": c["content"], "source": c["source"]}
-        if "similarity_score" in c:
-            clean["similarity_score"] = c["similarity_score"]
-        if isinstance(c.get("chunk_seq"), int):
-            clean["chunk_seq"] = c["chunk_seq"]
-        result_chunks.append(clean)
+Entries:
+{entries}"""
 
-    saved = len(chunks_with_emb) - len(result_chunks)
-    logger.info(
-        "[DEDUP_MERGE_%s] %d → %d chunk(s) (%d merged/eliminated)",
-        track_name.upper(), len(chunks_with_emb), len(result_chunks), saved,
+_JUDGE_PROMPT = """A memory-consolidation step merged these {count} source entries:
+{entries}
+
+into this single merged statement:
+{merged}
+
+Does the merged statement preserve every distinct fact from the sources, without inventing \
+anything the sources don't say? Respond with exactly one word: FAITHFUL or UNFAITHFUL."""
+
+
+def _format_entries(group: Sequence[DurableMemory]) -> str:
+    return "\n\n".join(f"- {memory.content}" for memory in group)
+
+
+def _llm_merge_text(group: Sequence[DurableMemory], llm_call: LLMCall) -> str | None:
+    prompt = _MERGE_PROMPT.format(count=len(group), entries=_format_entries(group))
+    try:
+        text = llm_call([{"role": "user", "content": prompt}])
+    except Exception:
+        logger.exception("[DEDUP_MERGE] LLM merge call raised")
+        return None
+    return text.strip() if text and text.strip() else None
+
+
+def _judge_accepts(group: Sequence[DurableMemory], merged_text: str, judge_call: LLMCall) -> bool:
+    prompt = _JUDGE_PROMPT.format(
+        count=len(group), entries=_format_entries(group), merged=merged_text
     )
-    return result_chunks, merge_pairs
+    try:
+        verdict = judge_call([{"role": "user", "content": prompt}])
+    except Exception:
+        logger.exception("[DEDUP_MERGE] judge call raised")
+        return False
+    if not verdict:
+        return False
+    verdict = verdict.strip().upper()
+    if "UNFAITHFUL" in verdict:
+        return False
+    return "FAITHFUL" in verdict
 
 
-# ── Per-track dedup-merge nodes (run in parallel) ────────────────────────────
+def merge_group(
+    group: Sequence[DurableMemory],
+    *,
+    llm_call: LLMCall | None = None,
+    judge_call: LLMCall | None = None,
+) -> DurableMemory:
+    base = _deterministic_union(group)
+    if len(group) > 1 and llm_call is not None and config.MERGE_LLM_ENABLED:
+        text = _llm_merge_text(group, llm_call)
+        if text:
+            accepted = (
+                judge_call is None
+                or not config.MERGE_VALIDATION_ENABLED
+                or _judge_accepts(group, text, judge_call)
+            )
+            if accepted:
+                return replace(base, content=text, id=content_id(text))
+            logger.info("[DEDUP_MERGE] judge rejected LLM merge — using deterministic union")
+    return base
 
-def dedup_merge_documents(state: GraphState, config=None) -> dict:
-    """Dedup-merge the documents track.
 
-    Runs in parallel with dedup_merge_learned_qa after validate_document_retrieval
-    completes.
+def _default_embedder():
+    from .embedding_manager import EmbeddingManager
+
+    return EmbeddingManager()
+
+
+def _default_llm_calls() -> tuple[LLMCall, LLMCall]:
+    from . import llm_caller, llm_setup
+
+    def llm_call(messages: list[dict]) -> str | None:
+        result = llm_caller.llm_invoke(llm_setup.llm, messages, caller_tag="mem_manage.merge")
+        return result.content if result.ok else None
+
+    def judge_call(messages: list[dict]) -> str | None:
+        result = llm_caller.llm_invoke(llm_setup.judge_llm, messages, caller_tag="mem_manage.judge")
+        return result.content if result.ok else None
+
+    return llm_call, judge_call
+
+
+def dedupe_and_merge(
+    memories: Sequence[DurableMemory],
+    *,
+    embedder=None,
+    threshold: float | None = None,
+    llm_call: LLMCall | None = None,
+    judge_call: LLMCall | None = None,
+    use_llm: bool = True,
+) -> list[DurableMemory]:
+    """Group near-duplicates by embedding similarity, then merge each group.
+
+    `embedder`/`llm_call`/`judge_call` default to the real services (built
+    lazily, imported only here) when omitted; pass fakes to run entirely
+    offline, e.g. in tests. `use_llm=False` skips the LLM path outright and
+    always uses the deterministic union, without needing to touch
+    config.MERGE_LLM_ENABLED.
     """
-    _t0 = time.perf_counter()
-    input_chunks = state.get("validated_document_chunks") or []
-    result, pairs = _run_dedup_merge("documents", input_chunks, get_switches(state), config=config)
-    timing_tracker.record("Total Merge Time for Retrieved Chunks", time.perf_counter() - _t0)
-    return {
-        "dedup_merged_document_chunks": result,
-        "dedup_merge_document_pairs": pairs,
-    }
+    if not memories:
+        return []
+    embedder = embedder or _default_embedder()
+    threshold = config.MERGE_SIMILARITY_THRESHOLD if threshold is None else threshold
+    groups = find_near_duplicate_groups(memories, embedder, threshold)
 
+    if use_llm:
+        if llm_call is None:
+            llm_call, judge_call = _default_llm_calls()
+    else:
+        llm_call, judge_call = None, None
 
-def dedup_merge_learned_qa(state: GraphState, config=None) -> dict:
-    """Dedup-merge the learned_qa track.
-
-    Runs in parallel with dedup_merge_documents after validate_learned_qa_retrieval
-    completes.
-    """
-    _t0 = time.perf_counter()
-    input_chunks = state.get("validated_learned_qa_chunks") or []
-    result, pairs = _run_dedup_merge("learned_qa", input_chunks, get_switches(state), config=config)
-    timing_tracker.record("Total Merge Time for Retrieved Chunks", time.perf_counter() - _t0)
-    return {
-        "dedup_merged_learned_qa_chunks": result,
-        "dedup_merge_learned_qa_pairs": pairs,
-    }
-
-
-# ── Per-track dedup-merge validators (run in parallel) ───────────────────────
-
-def validate_dedup_merge_documents(state: GraphState, config=None) -> dict:
-    """Validate merged document chunks for faithfulness.
-
-    Pass-through (no-op) when ENABLE_RETRIEVAL_DEDUP_MERGE_VALIDATION is False.
-    Runs in parallel with validate_dedup_merge_learned_qa.
-    """
-    _t0 = time.perf_counter()
-    sw = get_switches(state)
-    if not sw["ENABLE_RETRIEVAL_DEDUP_MERGE_VALIDATION"]:
-        timing_tracker.record("Total Validation Time for Merged Chunks", time.perf_counter() - _t0)
-        return {}
-    pairs: list[dict] = state.get("dedup_merge_document_pairs") or []
-    if not pairs:
-        logger.debug("[VALIDATE_DEDUP_MERGE_DOCUMENTS] no merge pairs to validate")
-        timing_tracker.record("Total Validation Time for Merged Chunks", time.perf_counter() - _t0)
-        return {}
-    for i, pair in enumerate(pairs):
-        check = validate_merge(pair["source_chunks"], pair["merged"], judge_llm, config=config, switches=sw)
-        logger.info(
-            "[VALIDATE_DEDUP_MERGE_DOCUMENTS] pair %d: verdict=%s  fabricated=%d  dropped=%d",
-            i, check["verdict"],
-            len(check.get("fabricated_claims", [])),
-            len(check.get("dropped_claims", [])),
-        )
-    timing_tracker.record("Total Validation Time for Merged Chunks", time.perf_counter() - _t0)
-    return {}
-
-
-def validate_dedup_merge_learned_qa(state: GraphState, config=None) -> dict:
-    """Validate merged learned_qa chunks for faithfulness.
-
-    Pass-through (no-op) when ENABLE_RETRIEVAL_DEDUP_MERGE_VALIDATION is False.
-    Runs in parallel with validate_dedup_merge_documents.
-    """
-    _t0 = time.perf_counter()
-    sw = get_switches(state)
-    if not sw["ENABLE_RETRIEVAL_DEDUP_MERGE_VALIDATION"]:
-        timing_tracker.record("Total Validation Time for Merged Chunks", time.perf_counter() - _t0)
-        return {}
-    pairs: list[dict] = state.get("dedup_merge_learned_qa_pairs") or []
-    if not pairs:
-        logger.debug("[VALIDATE_DEDUP_MERGE_LEARNED_QA] no merge pairs to validate")
-        timing_tracker.record("Total Validation Time for Merged Chunks", time.perf_counter() - _t0)
-        return {}
-    for i, pair in enumerate(pairs):
-        check = validate_merge(pair["source_chunks"], pair["merged"], judge_llm, config=config, switches=sw)
-        logger.info(
-            "[VALIDATE_DEDUP_MERGE_LEARNED_QA] pair %d: verdict=%s  fabricated=%d  dropped=%d",
-            i, check["verdict"],
-            len(check.get("fabricated_claims", [])),
-            len(check.get("dropped_claims", [])),
-        )
-    timing_tracker.record("Total Validation Time for Merged Chunks", time.perf_counter() - _t0)
-    return {}
-
-
-from services.operation_tracing import instrument_namespace as _instrument_namespace
-_instrument_namespace(globals(), "Deduplication and Merge", exclude={"dedup_merge_documents", "dedup_merge_learned_qa", "validate_dedup_merge_documents", "validate_dedup_merge_learned_qa"})
+    return [
+        merge_group([memories[i] for i in group], llm_call=llm_call, judge_call=judge_call)
+        for group in groups
+    ]

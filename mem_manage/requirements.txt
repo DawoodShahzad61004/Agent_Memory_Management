@@ -1,0 +1,24 @@
+# mem_manage — pinned to what a fresh `uv venv --python 3.13` actually resolved
+# (same convention memora_mini/requirements.txt follows). All 107 tests pass
+# and the real sentence-transformers/EmbeddingManager integration test runs
+# clean against this set; only the live-LLM integration test needs
+# CUSTOM_API_BASE configured and reachable, and skips cleanly otherwise.
+
+numpy==2.5.2
+torch==2.14.0
+sentence-transformers==6.0.1
+
+# LLM clients (services/llm_setup.py, services/llm_caller.py). Note: only the
+# raw `groq` SDK is needed (llm_caller.py's exception-handling imports it
+# directly) — langchain-groq itself is not, since llm_setup.py only ever
+# constructs ChatOpenAI clients (no tool-calling anywhere in this repo, see
+# docs/Decisions.md ADR-010).
+langchain-openai==1.6.0
+openai==3.7.0
+groq==1.7.0
+httpx==0.28.1
+requests==2.34.2
+python-dotenv==1.2.3
+
+# tests
+pytest==9.1.1
