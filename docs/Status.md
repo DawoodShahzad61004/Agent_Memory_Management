@@ -215,3 +215,33 @@
 * Tracked in: Decisions.md ADR-024; `README.md` "Current state" updated to reflect the pause.
 
 ---
+
+#### 2026-09-02 — Full paper read-through; contradictory-memory-update procedure designed (not yet implemented)
+
+* Read arXiv:2605.08538v1 ("Human-Inspired Memory Architecture for LLM Agents") in full — the paper
+  Architecture.md's Formulae table already draws four equations from — and took notes on mechanics not previously
+  captured: consolidation's top/middle/bottom 20/60/20 promote/retain/prune split, the chronological-consistency
+  quarantine filter (15-minute TTL against out-of-order/duplicate/causally-inverted events), and the three
+  behaviorally distinct zones of the maturation sigmoid (inactive below 0.3, search-only-not-context 0.3-0.5,
+  retrievable above 0.5).
+* Had a research conversation working through the paper's one acknowledged gap: reconsolidation (§7.2) is
+  described only at a high level (60-minute labile window, adaptive blending, outcome reinforcement) with no
+  exact contradiction-resolution formula, and the paper itself says the mechanism wasn't meaningfully validated
+  because its benchmark has too few cross-session contradictions.
+* Produced two design artifacts from that gap: a cache-free graph mechanism for the labile window itself (a
+  `ReconsolidationWindow` node plus session-scoped `RETRIEVED`/`OBSERVED` edges standing in for a "recently
+  retrieved" cache), and the main deliverable — a full formula set ("versioned semantic reconsolidation with
+  bounded access-based inertia") for actually resolving a contradiction: access-based inertia `U_o`, evidence
+  strength `E_x`, a sigmoid resolution score `P_new` with supersede/reject/dispute thresholds, a persisted Current
+  Belief score `B_x` consumed at retrieval time, and a review-priority score `R_review` for ambiguous cases.
+* Flagged explicitly (both in the conversation and in the docs written from it): this procedure is designed but
+  untested — it needs to be tried against real traces — and it sits in tension with Architecture.md Principle 4's
+  already-decided passive-only conflict handling, which this new procedure would turn into an active, judged
+  resolution deferred only to the offline consolidation batch. That tension is unresolved; deciding it needs its
+  own ADR before any of this reaches `mem_manage/`.
+* Deleted `Handwritten_Notes_Transcription.md` (temp transcription of the paper notes) once its content was
+  folded into Research.md topic 10.
+* Tracked in: `docs/Research.md` new topic 10; `docs/Architecture.md` § "Formulae" (new row 5) + changelog entry;
+  `README.md` updated; `Handwritten_Notes_Transcription.md` deleted.
+
+---

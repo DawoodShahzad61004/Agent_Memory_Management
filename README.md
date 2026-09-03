@@ -33,7 +33,11 @@ closer to this module's target workload than a general-chat benchmark would be. 
 starting point, not a settled configuration — they get re-derived against coding-agent traces here.
 
 The exact equations and how each maps onto this module are tabulated in
-[`docs/Architecture.md` § "Formulae"](docs/Architecture.md).
+[`docs/Architecture.md` § "Formulae"](docs/Architecture.md). The paper was read in full on 2026-09-02
+([`docs/Research.md` topic 10](docs/Research.md)), which also worked out a candidate procedure for the one thing
+the paper itself leaves unresolved — how a contradictory memory actually gets updated. That procedure is designed
+but untested, and it currently conflicts with this repo's own Principle 4 (below); see Architecture.md's Formulae
+row 5 for the open question.
 
 ## Repository layout
 

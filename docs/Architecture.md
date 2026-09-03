@@ -185,12 +185,14 @@ chosen as the source.
 | 1 | Composite importance | `S(e) = Σᵢ wᵢ · fᵢ(e)` over five factors — recency, frequency, surprise, entity salience, outcome (paper weights `0.25 / 0.25 / 0.20 / 0.15 / 0.15`) | The **initial** value a new record's activation starts from. Principle 6 enters here: `provenance = explicit` weights the outcome/salience terms up. |
 | 2 | Passive decay | `I(t) = I₀ · e^(−λt)`, `t` in hours since encoding (paper: `λ = 0.001`, ≈29-day half-life) | Principle 7 layer 1. `t` resets on retrieval, which is what makes actively-used memories persist indefinitely. |
 | 3 | Interference | `I_interference = Σⱼ wⱼ · sim(mᵢ, mⱼ)` (paper: retroactive `0.6`, proactive `0.4`) | Principle 7 layer 2, and the accelerator for principle 4's deferred conflict resolution. `sim()` is the same embedding similarity consolidation uses. |
-| 4 | Maturation | `A(t) = 1 / (1 + e^(−(t − t½)/k))` (paper: `t½ = 168 h`, `k = 48`) | The sigmoid ramp a new record climbs before it is fully trusted in recall — a learning seen once should not immediately outrank one confirmed across a week. |
+| 4 | Maturation | `A(t) = 1 / (1 + e^(−(t − t½)/k))` (paper: `t½ = 168 h`, `k = 48`) | The sigmoid ramp a new record climbs before it is fully trusted in recall — a learning seen once should not immediately outrank one confirmed across a week. Gates three zones, not one cutoff: `A < 0.3` inactive (RAG covers the gap), `0.3 ≤ A < 0.5` can influence search ranking but never surfaces in context, `A ≥ 0.5` retrievable. |
+| 5 | Reconsolidation | Paper §7.2: retrieved memories enter a 60-minute labile window; new information blends in by confidence/recency/contradiction-severity; outcome-based reinforcement. No exact blending formula given — the paper states this was not meaningfully validated (too few cross-session contradictions in its benchmark). | **Not yet adopted here.** Research.md topic 10 works out a candidate formula set (`U_o`, `E_x`, `P_new`, `B_x`, `R_review`) extending this, but it resolves contradictions as an active, judged decision at consolidation time — which is in tension with Principle 4 below (conflicts are written alongside the old record and left to passive decay, with no write-time "which one is right" judgment anywhere). That tension is unresolved and needs an ADR before either mechanism is implemented. |
 | — | Graceful degradation | Fidelity ladder `L0` (full record) → `L2` (summary) → `L3` (gist) → `L5` (tombstone) → hard delete, stepped by age and activation | Principle 7 layer 3. Triggered by the record's own state, not by storage pressure. |
 
 > **Verify before implementing.** These were read out of the paper during design, not transcribed from a
 > validated build. Check each equation, symbol, and constant against the source text before writing code against
-> it, and record the calibration actually adopted in Decisions.md.
+> it, and record the calibration actually adopted in Decisions.md. Row 5 remains flagged even after a full
+> read-through (2026-09-02, Research.md topic 10) since it was never reduced to code, only to a candidate design.
 
 ### Deliberately out of scope
 
@@ -542,5 +544,19 @@ to a coding agent, and the replacement of its Mem0 dependency, are the prerequis
 `LangMem/`, and the `temp_graph/` record were reframed as prior art; their content is retained here unchanged,
 with the mechanisms that carry forward into `mem_manage/` (and the ones that don't) called out explicitly.
 `README.md` and this document were rewritten to match. `mem_manage/` itself remains empty — design only, no code.
+
+### 2026-09-02 — Paper read in full; reconsolidation gap surfaced as an unresolved design tension
+
+arXiv:2605.08538v1 was read end to end (previously only "read out of the paper during design," per the Formulae
+table's own verification flag). This confirmed the four already-adopted equations and added detail the table
+didn't have: consolidation's top/middle/bottom 20/60/20 promote/retain/prune bands, the maturation sigmoid's three
+retrieval zones (now folded into row 4 above), and a chronological-consistency quarantine filter (15-minute TTL
+against out-of-order/duplicate/causally-inverted events) not previously recorded here. A follow-on research pass
+went deeper into §7.2 (Reconsolidation), which the paper itself only sketches and flags as unvalidated, and worked
+out a candidate formula set for resolving contradictory memories via versioned graph claims (Research.md topic
+10) — added above as Formulae row 5, explicitly not adopted. That candidate procedure is an active, judged
+resolution, which sits in real tension with Principle 4's decision to defer all conflict resolution to passive
+decay; row 5's note flags this, and the reconciliation is left open pending an ADR. No code changed; `mem_manage/`
+remains empty.
 
 ---
