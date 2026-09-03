@@ -8,9 +8,10 @@ degrades: retrieval gets noisier, stale conventions outlive the code they descri
 sit side by side with nothing to break the tie. This module treats *forgetting* as a first-class mechanism rather
 than a storage-cleanup afterthought.
 
-> **Status: design phase.** `mem_manage/` is empty — the design is settled enough to document, not yet built.
-> See [`docs/Architecture.md`](docs/Architecture.md) for the target architecture and
-> [`docs/Status.md`](docs/Status.md) for where things stand.
+> **Status: implementation complete, testing phase.** `mem_manage/` is built, tested (107/108 passing tests),
+> and CLI-verified end-to-end. The module is usable for compacting episodic-memory markdown logs right now;
+> integration into `Sample_Coding_Agent/` is the next step. See [`docs/Architecture.md`](docs/Architecture.md) for
+> the architecture and [`docs/Status.md`](docs/Status.md) for the implementation timeline.
 
 ## Design principles
 
@@ -43,8 +44,9 @@ row 5 for the open question.
 
 | Path | Role |
 |---|---|
-| `mem_manage/` | **The module.** The deliverable. Currently empty. |
-| `Sample_Coding_Agent/` | **Test harness.** The agent `mem_manage/` gets wired into and exercised against. Currently a single-file LangGraph chatbot inherited from the Mem0 evaluation; to be converted from a customer-support persona to a coding agent. |
+| `mem_manage/` | **The module.** The deliverable. Complete: config, importance scoring, memory shape, consolidation, dedup/merge, and CLI. All constants centralized, all tests passing. Awaits integration into the test harness. |
+| `mem_manage/tests/` | **Test suite.** 108 tests covering config, scoring, memory lifecycle, decay, pruning, and end-to-end pipeline. All numeric assumptions verified empirically. |
+| `Sample_Coding_Agent/` | **Test harness.** The agent `mem_manage/` gets wired into and exercised against. Currently a single-file LangGraph chatbot inherited from the Mem0 evaluation; to be converted from a customer-support persona to a coding agent, with Mem0 replaced by `mem_manage/`. |
 | `memora_mini/` | **Prior art, working.** A native reimplementation of LangMem's memory taxonomy — supersede-not-delete lifecycle, strength-based recall with recency decay, offline extract→classify→apply consolidation. Several of its mechanisms are direct antecedents of `mem_manage/`'s. |
 | `LangMem/` | Reference material for the LangMem evaluation. Not executable. |
 | `tests/` | `pytest` suite for `memora_mini/` (58 tests, no LLM server or network required). |
@@ -59,21 +61,30 @@ a clear picture of what the candidates get wrong for this use case: they accumul
 purpose. The repo is now scoped to building that missing piece directly. The evaluation directories stay as prior
 art; nothing about them is being resumed.
 
-## Running the existing pieces
+## Running the code
 
 Virtual environments are gitignored and are **not** present in a fresh checkout — create them first
-(`uv venv` + `uv pip install -r memora_mini/requirements.txt` at the root; `Sample_Coding_Agent/` needs
-`mem0ai`, `langgraph`, `langchain-openai`, `python-dotenv`).
+(`uv venv --python 3.13` + install from the relevant `requirements.txt` file).
 
 ```bash
-# from the repo root — memora_mini (prior art, works today)
+# from the repo root — mem_manage (the deliverable, ready to use)
+uv venv .venv --python 3.13
+uv pip install -r mem_manage/requirements.txt
+.venv/Scripts/python.exe -m mem_manage.compact <episodic_log.md>    # CLI: compact a Markdown log
+
+# mem_manage tests (no LLM server or network needed)
+.venv/Scripts/python.exe -m pytest mem_manage/tests/ -v             # full test suite
+.venv/Scripts/python.exe -m pytest mem_manage/tests/test_importance.py -v  # specific test module
+
+# memora_mini (prior art, LangMem reference implementation, works today)
+# (reuses the .venv above)
 .venv/Scripts/python.exe memora_mini/demo.py     # scripted end-to-end demo
 .venv/Scripts/python.exe memora_mini/main.py     # CLI REPL
 
-# tests need no LLM server and no network
+# tests for memora_mini
 .venv/Scripts/python.exe -m pytest tests/ -q
 
-# the sample agent (Mem0-backed, pre-conversion)
+# the sample agent (Mem0-backed, pre-conversion; separate .venv needed)
 Sample_Coding_Agent/.venv/Scripts/python.exe Sample_Coding_Agent/main.py
 ```
 

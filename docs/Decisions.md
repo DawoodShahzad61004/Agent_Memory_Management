@@ -172,8 +172,8 @@
 | **Date** | 2026-07-29 |
 | **Options Considered** | One call classifying a candidate against all of its neighbours at once · one call doing extract + reconcile + merge together, i.e. what `create_memory_manager` itself does · one call per pair, single token. |
 | **Chosen Solution** | Per-pair, single-token. |
-| **Rationale** | Against an 8B model, a call that must align a candidate with several neighbours *and* emit structured output fails in ways that are hard to attribute to a specific cause. A single token has exactly one failure mode — unrecognised text — with an obvious, safe fallback (`UNRELATED` → insert). The cost is `candidates × CLASSIFY_NEIGHBOURS` calls per interaction, acceptable because reflection runs offline, never in the request path. |
-| **Impact** | `memory/classify.py`; `strongest()` resolves disagreement across neighbours by priority (`CONTRADICTS` > `REFINES` > `DUPLICATE`). If a stronger model becomes available later, a batched form is a strictly cheaper drop-in and only this module would change. |
+| **Rationale** | Against an 8B model, a call that must align a candidate with several neighbours *and* emit structured output fails in ways that are hard to attribute to a specific cause. A single token has exactly one failure mode — unrecognised text — with an obvious, safe fallback (`UNRELATED` → insert, never mutate); the cost is `candidates × CLASSIFY_NEIGHBOURS` calls per interaction, acceptable because reflection runs offline, never in the request path. |
+| **Impact** | `memory/classify.py`; `strongest()` resolves disagreement across neighbours by priority (`CONTRADICTS > REFINES > DUPLICATE`). If a stronger model becomes available later, a batched form is a strictly cheaper drop-in and only this module would change. |
 
 ---
 
@@ -316,10 +316,94 @@
 |---|---|
 | **Decision** | Pause further candidate evaluation work in this repo (Mem0 or otherwise) until a decision is made on upgrading the local LLM server to a tool-calling-capable model. |
 | **Date** | 2026-07-30 |
-| **Context** | Tool-calling support (or its absence) has now shaped multiple candidates' outcomes: it categorically ruled out LangMem's SDK manager layer (ADR-010, via `trustcall`), and even where it isn't a hard requirement (Mem0's core pipeline — Research.md topic 9), enough adjacent tooling and provider-specific behavior assumes it that the current no-tool-calling local endpoint keeps becoming a recurring constraint to design around rather than a one-off blocker. |
+| **Context** | Tool-calling support (or its absence) has now shaped multiple candidates' outcomes: it categorically ruled out LangMem's SDK manager layer (ADR-010, via `trustcall`), and even where it isn't a hard requirement (Mem0's core pipeline — Research.md topic 9), enough of the broader tooling and provider-specific behavior in this space assumes it that the current no-tool-calling local endpoint keeps becoming a recurring constraint to design around rather than a one-off blocker. |
 | **Options Considered** | Keep evaluating additional candidates (Graphiti, Letta, etc.) against the current no-tool-calling endpoint, designing around the constraint each time as done for LangMem/Mem0 · pause new candidate work and decide on a local LLM upgrade first, since a tool-calling-capable model would remove the constraint for every future candidate at once rather than one at a time. |
 | **Chosen Solution** | Pause; decide on the LLM upgrade first. |
 | **Rationale** | Working around the no-tool-calling constraint per candidate (ADR-010's `memora_mini` reimplementation, Mem0's JSON-only extraction path) is real, repeated engineering cost. If a tool-calling-capable local model is adopted, that cost disappears for every remaining candidate at once, so resolving the model question first is higher-leverage than continuing to evaluate against a constraint that may not exist much longer. |
 | **Impact** | No new candidate directories planned until this is decided. `memora_mini` (LangMem) and `Sample_Coding_Agent/` (Mem0, first pass) are left in their current states — both already tested/working within their own scope, not blocked or broken by the pause. Revisit this ADR once the LLM upgrade decision is made, either resuming with Graphiti/Letta/etc. against an upgraded endpoint, or continuing the no-tool-calling-constrained approach deliberately. |
+
+---
+
+## ADR-025 · Move from evaluation to implementation; build `mem_manage/` as a standalone module for coding agents
+
+| Field | Detail |
+|---|---|
+| **Decision** | Repurpose the repository from an evaluation sandbox (comparing LangMem, Mem0, etc. against Memora's existing memory layer) to building a single, complete module `mem_manage/` targeted specifically at coding agents. Keep the evaluation work (`memora_mini/`, `Sample_Coding_Agent/`, `LangMem/`) as prior art, but cease new candidate evaluation. |
+| **Date** | 2026-09-02 / 2026-09-03 |
+| **Context** | The evaluation stalled on a technical constraint (tool-calling support) that kept resurfacing, but the evaluation also produced a clear finding that all candidates shared the same architectural flaw: they accumulate memory indefinitely and never forget on purpose. This is the real gap to solve. Rather than continue searching for an off-the-shelf candidate, the repo should build the missing piece directly. |
+| **Options Considered** | Continue the evaluation against multiple candidates · build a lightweight adapter around an existing candidate (e.g., wrap Mem0's API) · build a standalone module from the ground up, informed by prior work and the paper. |
+| **Chosen Solution** | Build standalone. |
+| **Rationale** | None of the candidates actually solve the core problem (they don't forget); wrapping one would inherit its limitations; building from the ground up means every design decision is intentional and grounded in the paper and this repo's prior art, with no inherited tech debt. The evaluation work stays in the repo as evidence of the alternatives considered. |
+| **Impact** | `mem_manage/` is the new deliverable. `memora_mini/`, `Sample_Coding_Agent/`, and `LangMem/` are retained as prior art but not extended. See ADR-020 and §3 of Architecture.md for what carries forward from prior work into the new module. |
+
+---
+
+## ADR-026 · Centralize all configuration into `mem_manage/config.py`; load from repo-root `.env`
+
+| Field | Detail |
+|---|---|
+| **Decision** | All constants, thresholds, weights, decay parameters, merge-similarity cutoffs, entity-extraction regex patterns, and env-variable loading are centralized in a single `config.py` at the `mem_manage/` root. No other module in the package reads `os.environ` directly. The repo-root `.env` is resolved by absolute path per ADR-023 precedent. |
+| **Date** | 2026-09-03 |
+| **Context** | The first pass of `importance.py` (2026-09-02, a code snippet) had hardcoded constants scattered throughout, and the copied service files (`llm_setup.py`, etc.) each tried to import config from different paths, creating fragility. `memora_mini/config.py` already demonstrated the single-source-of-truth pattern; applying it here eliminates a source of bugs and makes tuning (especially for the paper-derived constants, which need re-derivation against coding-agent traces) straightforward. |
+| **Options Considered** | Leave constants inline where they're used · use environment variables throughout · use a YAML/TOML config file · centralize into one `config.py` module. |
+| **Chosen Solution** | Single `config.py`, loaded once at import time. |
+| **Rationale** | Python module-level constants are fast, IDE-searchable, and override-friendly via env variables when needed; YAML/TOML adds a format to learn and maintain; scattering via env-only is error-prone for compound defaults. Follows established pattern from `memora_mini/config.py`. |
+| **Impact** | `mem_manage/config.py` is the single place to adjust importance weights, decay rates, merge thresholds, and feature flags. Every test and every CLI invocation sees the same configuration baseline. Swapping test-vs-production constants becomes a single env-file edit. |
+
+---
+
+## ADR-027 · Dedup/merge uses LLM-assisted synthesis with deterministic fallback, not pure Python
+
+| Field | Detail |
+|---|---|
+| **Decision** | When a group of near-duplicate memories is identified for merging, the first choice is an LLM call to synthesize a unified statement (the "merge" step); if that call fails or returns invalid output, or if merging is explicitly disabled, fall back to a deterministic Python union (string concatenation + field unions). The judge validates the LLM merge; if rejected, the fallback is used. |
+| **Date** | 2026-09-03 |
+| **Context** | ADR-014 established that `memora_mini` merges via deterministic Python (no LLM call in the write path) to keep mutation nondeterministic and safe for an offline consolidation pipeline. However, that produces uglier merged text (two concatenated answers rather than one synthesised answer). The trade-off was specifically about write-path latency and reliability; an offline consolidation step has more latitude. The implementation should offer both: try the LLM first (since it's offline), fall back to deterministic if anything fails (maintaining safety), and let a judge optionally validate the result (implementing Principle 4's deferred conflict resolution, but with an extra validation layer). |
+| **Options Considered** | Pure deterministic merge as in ADR-014 (safest, ugliest results) · pure LLM merge (better output, but any failure breaks the consolidation run) · LLM-first with deterministic fallback (takes the upside, contains the downside). |
+| **Chosen Solution** | LLM-first with fallback, optionally judge-validated. |
+| **Rationale** | Offline pipelines can afford LLM calls; fallback ensures no consolidation run ever fails because the LLM was unreachable or misbehaved; judge validation is an optional extra check. The judge sees *only* whether the merge makes sense (one coherent statement?), not whether it's *true* — that's deferred to Principle 4's recency-based conflict resolution. |
+| **Impact** | `services/dedup_merge.py::merge_group()` is the decision point. Parameter `use_llm` controls whether to attempt the LLM path; `judge_llm` controls whether to validate the result. Every test covers the failure paths; the CLI defaults to `use_llm=True, judge_llm=False` (fast path, no double-call overhead). |
+
+---
+
+## ADR-028 · Importance scoring is computed once at store time; activation initializes from it
+
+| Field | Detail |
+|---|---|
+| **Decision** | The five-factor composite-importance score (`S(e) = Σwᵢfᵢ(e)` from the paper) is computed once when a DurableMemory record is first created (right after consolidation, before store). This becomes the `importance` field on the record; `activation` (Principle 2) initializes from it. Importance is never recomputed; only activation evolves. |
+| **Date** | 2026-09-03 |
+| **Context** | The paper computes importance at consolidation time; recency, frequency, surprise, and entity salience all benefit from seeing the full corpus (post-dedup, post-merge). Computing it only once (not on every access) keeps it fast and deterministic. Separating importance (the initial signal) from activation (the ongoing state) keeps Principle 2's "single scalar" clean: activation alone evolves on retrieval, interference, and decay; importance is a locked-in foundation. |
+| **Options Considered** | Compute importance on every access (accurate but slow) · compute at store time only · compute every consolidation cycle (expensive, defeats the purpose of offline). |
+| **Chosen Solution** | At store time only. |
+| **Rationale** | Fast, deterministic, faithfully separates the one-time signal (importance) from the ongoing state (activation). If importance-weight tuning is needed, a maintenance cycle can recompute all records' importance from their current content (deferred work, not part of v1). |
+| **Impact** | `importance.py::composite_importance()` is called from `memory.py::build_durable_memories()` exactly once per record; its result is stored and never recomputed. |
+
+---
+
+## ADR-029 · Test suite covers numeric assumptions empirically; no eyeballed thresholds
+
+| Field | Detail |
+|---|---|
+| **Decision** | Every numeric assumption in the test suite — similarity ratios for duplicate-detection thresholds, passive-decay half-life math, entity-salience scaling — is verified empirically (via actual SequenceMatcher runs, decay calculations, etc.) before being locked into a test, not guessed or assumed. |
+| **Date** | 2026-09-03 |
+| **Context** | The `dedup_merge.py` tests use a 0.90 similarity threshold for grouping near-duplicates; that threshold's actual effect on a diverse set of test entries needed to be checked to avoid false merges and false non-merges. Similarly, the passive-decay tests use approximate half-life math (693 hours ≈ 29 days at λ=0.001); the actual vs. expected activation values needed to be within error bounds. |
+| **Options Considered** | Pick thresholds from the paper and trust they'll work · guess a threshold and iterate if tests fail · empirically verify each threshold before writing tests. |
+| **Chosen Solution** | Empirical verification before locking. |
+| **Rationale** | Thresholds that work on one dataset may fail on another; verifying with actual similarity calculations on the test-fixture entries means the tests reflect reality, not assumptions. The verification step is a one-time cost before v1 ships. |
+| **Impact** | Every test involving a numeric boundary includes a comment pointing to the empirical check that validated it (e.g., "verified via SequenceMatcher against 10 distinct topic pairs, max ratio 0.529"). Test fixtures include padding entries specifically to catch false groupings. |
+
+---
+
+## ADR-030 · Python 3.13 environment, `uv`-managed, pinned `requirements.txt` with resolved versions
+
+| Field | Detail |
+|---|---|
+| **Decision** | The `mem_manage/` package runs on Python 3.13 (matching `memora_mini`'s environment), dependency installation is via `uv` (matching the repo's established pattern), and `mem_manage/requirements.txt` is a pinned list of resolved versions (not abstract `langchain>=1.0`, but `langchain-openai==1.6.0`, etc.) to ensure reproducible builds. |
+| **Date** | 2026-09-03 |
+| **Context** | The repo already uses `uv` and Python 3.13 for `memora_mini`; consistency across the repo keeps setup simple. Sentence-transformers and torch are heavy dependencies with platform-specific wheels (CPU vs CUDA); pinned versions eliminate version-resolution churn and platform surprises. |
+| **Options Considered** | Python 3.12 for better sentence-transformers compatibility · loose pinning ("^1.6.0") for flexibility · full pinned freeze. |
+| **Chosen Solution** | Python 3.13, full pinned freeze. |
+| **Rationale** | 3.13 is available on this machine and works fine; full pinning removes one class of runtime surprises. Sentence-transformers and torch have plenty of binaries for 3.13+. |
+| **Impact** | `mem_manage/requirements.txt` is generated from `uv pip freeze` after a fresh install, pinning 50+ transitive dependencies. Fresh setup: `uv venv .venv --python 3.13` + `uv pip install -r mem_manage/requirements.txt`. |
 
 ---

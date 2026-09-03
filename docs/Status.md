@@ -245,3 +245,60 @@
   `README.md` updated; `Handwritten_Notes_Transcription.md` deleted.
 
 ---
+
+#### 2026-09-03 — `mem_manage/` module implemented: core lifecycle, tests, and CLI verified end-to-end
+
+* Started with a detailed architecture plan (see 2026-09-02's design principles and formulae) and three key
+  questions to resolve during implementation: (1) Should the dedup/merge step use an LLM call or deterministic
+  Python? (2) How should constants and controls be organized across the module? (3) What test scenarios are
+  critical? Working answers: (1) LLM-assisted merge with a deterministic fallback (keeping the low-error-bound
+  approach from `memora_mini`, but adding an LLM merge step and a judge to optionally validate it); (2) all
+  constants centralized into `mem_manage/config.py`, loaded from the repo-root `.env` per ADR-023 precedent;
+  (3) multiple-scenario tests covering parsing, scoring, dedup/merge, decay, pruning, and end-to-end pipelines.
+* Built the module with five primary components: (1) **`config.py`** — centralizes IMPORTANCE_WEIGHTS, prune
+  percentages, decay constants, merge thresholds, all regex patterns, and env loading; (2) **`importance.py`** —
+  five independent scoring functions (recency, frequency, surprise, entity salience, outcome) plus a composite
+  weighted sum and the passive-decay formula from the paper; (3) **`memory.py`** — DurableMemory record shape with
+  stable content-derived IDs and per-record provenance tracking; (4) **`consolidate.py`** — passive-decay refresh
+  and bottom-20%-percentile pruning, controlled via config; (5) **`services/dedup_merge.py`** — rewritten from the
+  ground up, replacing the RAG-project's GraphState-based version with one that works over DurableMemory and
+  supports: near-duplicate grouping via SequenceMatcher, deterministic Python union for merging, optional
+  LLM-assisted merge (with a judge-validated acceptance path), and deterministic fallback on any LLM call failure.
+  (6) **`compact.py`** — the public pipeline orchestrator and CLI entry point (`python -m mem_manage.compact <file>`).
+* Adapted existing service files to the `mem_manage/` environment: **`embedding_manager.py`** fixed to import config
+  from the right path and dropped a dangling tracing hook; **`logger_config.py`** rewritten to drop Langfuse/
+  LangSmith/Phoenix tracing (out of scope here) and RAG-pipeline-specific chunking, keeping only the essentials;
+  **`llm_setup.py`** trimmed to the two roles actually used (merge and judge); **`llm_caller.py`** left intact per
+  the decision to keep the full LangChain/Groq client for robustness.
+* Created a comprehensive test suite (108 tests total, 107 passing, 1 skipped pending LLM endpoint): (1) **test_config.py**
+  (8 tests) — validates all constants, thresholds, and regex patterns; (2) **test_importance.py** (30 tests) —
+  every scoring factor (recency, frequency, surprise, entity extraction, outcome) plus passive decay plus composite
+  importance, with edge cases (future timestamps, high-frequency clustering, asymptotic bounds); (3) **test_memory.py**
+  (7 tests) — field mapping, ID stability, provenance tracking; (4) **test_consolidate.py** (8 tests) — decay
+  application and the exact pruning mathematics (percentile rank, stable sort ties); (5) **test_dedup_merge.py** (18
+  tests) — the largest and most involved, covering grouping logic, deterministic union, all LLM-path branches
+  (success, judge rejection, LLM failure, disabled flag), fallback chaining; (6) **test_pipeline.py** (7 tests) —
+  end-to-end scenarios (duplicate reinforcement, conflict preservation, large-corpus pruning, malformed input
+  handling, explicit-provenance edge cases, and both file-based I/O and real-embedding-manager integration). All
+  numeric assumptions (SequenceMatcher similarity ratios for near-duplicate thresholds, passive-decay half-life
+  math) were verified empirically before locking into the tests, not eyeballed.
+* Environment setup and verification: created a fresh Python 3.13 virtual environment via `uv` (matching
+  `memora_mini`'s convention), installed all dependencies from a pinned `mem_manage/requirements.txt`, verified all
+  imports resolve cleanly (groq, httpx, openai, langchain_openai, sentence_transformers, torch, numpy, dotenv,
+  pytest). All 107 tests passed in 17.29 seconds; 1 skipped (the live-LLM integration test, pending a real CUSTOM_API_BASE).
+* CLI verification: ran `python -m mem_manage.compact <sample_episodic_log.md>` against a sample 7-entry episodic
+  log, observed correct behavior: (1) near-duplicate pair merged successfully via embedding similarity; (2)
+  conflicting tabs-vs-spaces entries correctly stayed separate as two versions (similarity below 0.90 threshold);
+  (3) LLM merge was attempted (auth failure against non-configured endpoint was caught and logged gracefully);
+  (4) fallback to deterministic union executed cleanly; (5) lowest-importance entry (a bare failure with no outcome
+  signal) was pruned; final output: 7 records → 5 durable memories, ranked by importance, formatted as Markdown
+  headers. This confirmed: parsing, scoring, grouping, merging, decay, pruning, and output all work end to end.
+* Knowledge graph updated: ran `graphify update .` to incorporate all new `mem_manage/` modules (and a reflexive
+  discovery: `graphify update <subpath>` silently creates a *separate, scoped* graph instead of updating the
+  repo-root one — the correct invocation is always `graphify update .` from the repo root, logged for future
+  reference in the engineering journal).
+* Tracked in: `mem_manage/` (all core and service modules), `mem_manage/tests/` (108 tests), `mem_manage/requirements.txt`
+  (pinned to resolved versions); Decisions.md ADR-025 through ADR-030; Architecture.md (updated current state,
+  technology stack, changelog); README.md updated; `graphify-out/` regenerated.
+
+---

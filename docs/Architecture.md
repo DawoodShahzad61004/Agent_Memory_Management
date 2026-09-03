@@ -10,9 +10,9 @@ and contradictory entries sit side by side with nothing to break the tie. So **f
 mechanism here, not storage cleanup**: every record carries a decaying activation value, and decay is what
 resolves conflicts, bounds growth, and keeps recall precise.
 
-> **Current state: design phase.** `mem_manage/` exists as an empty directory. The design below is the target;
-> nothing in it is implemented yet. What *is* implemented and working in this repo is prior art —
-> `memora_mini/` (§ "Prior art") — several of whose mechanisms are direct antecedents of the target design.
+> **Current state: implementation complete, testing phase.** `mem_manage/` is fully built and tested (108 tests,
+> 107 passing, 1 skipped pending LLM endpoint); the CLI is verified working end-to-end. The module is usable as-is
+> for compacting episodic-memory markdown logs; the next milestone is integration into `Sample_Coding_Agent/`.
 
 ### How the repo got here
 
@@ -433,7 +433,8 @@ directly why the SDK approach doesn't work here (ADR-010).
 
 | Component | Technology | Notes |
 |---|---|---|
-| **`mem_manage/`** | **not yet implemented** | Design targets: no tool-calling, no cloud egress, deterministic mutation in Python. |
+| **`mem_manage/` core** | Pure Python, hand-written | No tool-calling, no cloud egress, deterministic mutation. Five modules: `config.py` (centralized constants), `importance.py` (scoring), `memory.py` (record shape), `consolidate.py` (decay/prune), `compact.py` (CLI orchestrator). Services (`dedup_merge.py`, adapted `embedding_manager.py`/`llm_caller.py`/`llm_setup.py`/`logger_config.py`). |
+| **Test suite** | `pytest` (108 tests) | 107 passing, 1 skipped (pending LLM). Comprehensive coverage: config validation, all five importance factors, memory lifecycle, dedup/merge (all branches), passive decay, prune, end-to-end pipeline. All numeric assumptions verified empirically. |
 | Graph orchestration | LangGraph `StateGraph` (`langgraph==1.2.9`) | `memora_mini` (five nodes, one conditional edge) and `Sample_Coding_Agent` (one self-looping node) |
 | Memory extraction/classification | Hand-written `memory/extract.py` + `memory/classify.py` | Plain-JSON prompts + `json_fix.py` repair; no tool-calling, no `trustcall` |
 | Memory writes | Hand-written `memory/apply.py` | Pure Python, deterministic; the model never proposes a delete |
@@ -521,6 +522,25 @@ hard blocker for LangMem's SDK layer, a soft one shaping Mem0's provider/extract
 tool-calling-capable local LLM was under consideration but not decided (ADR-024). That pause is what the
 2026-09-02 pivot resolves — by building the module rather than resuming the search.
 
+### 2026-09-03 — `mem_manage/` fully implemented, tested, and CLI-verified
+
+The module is built and working. Completed five core components: `config.py` (centralized constants, all regex
+patterns, env loading per ADR-026); `importance.py` (five independent scoring functions plus composite sum plus
+passive decay, all per the paper); `memory.py` (DurableMemory record shape with stable content-derived IDs);
+`consolidate.py` (decay refresh + percentile-rank pruning); `compact.py` (orchestrator + CLI entry point). Adapted
+existing service files: `embedding_manager.py`, `logger_config.py`, `llm_setup.py` (trimmed to the two LLM roles
+actually used: merge and judge), `llm_caller.py` (kept intact for robustness). Built `services/dedup_merge.py`
+from the ground up to support LLM-assisted merge with deterministic fallback (ADR-027), judge validation (optional),
+and grouping via SequenceMatcher (ADR-029's empirical threshold verification). Created a 108-test suite covering
+configuration validation (8), every importance factor including edge cases (30), memory record shape (7), decay and
+pruning math (8), all dedup/merge branches (18), and end-to-end pipeline scenarios (7). Verified all numeric
+assumptions empirically before locking (decay half-life, similarity thresholds); 107 tests passing in 17.29
+seconds, 1 skipped pending LLM endpoint. Ran the CLI end-to-end against a 7-entry sample log: correct merge of
+near-duplicates, conflict preservation, LLM merge attempted (fallback executed cleanly on auth failure), and
+bottom-20%-percentile pruning working as designed. Pinned `mem_manage/requirements.txt` to resolved versions
+(50+ transitive dependencies) from a fresh Python 3.13 uv environment. Updated knowledge graph (graphify update .).
+All tracked in Status.md, Decisions.md ADR-025 through ADR-030, Technology Stack above, this changelog, and README.
+
 ### 2026-09-02 — Repurposed: from evaluation sandbox to `mem_manage/`, a memory module for coding agents
 
 The repo's purpose changed. It is no longer a comparison harness for external memory libraries; it now builds one
@@ -543,7 +563,8 @@ candidate under evaluation" to "test harness for `mem_manage/`" — its conversi
 to a coding agent, and the replacement of its Mem0 dependency, are the prerequisite next steps. `memora_mini/`,
 `LangMem/`, and the `temp_graph/` record were reframed as prior art; their content is retained here unchanged,
 with the mechanisms that carry forward into `mem_manage/` (and the ones that don't) called out explicitly.
-`README.md` and this document were rewritten to match. `mem_manage/` itself remains empty — design only, no code.
+`README.md` and this document were rewritten to match. `mem_manage/` itself was left empty at this stage — design
+complete, implementation deferred until 2026-09-03.
 
 ### 2026-09-02 — Paper read in full; reconsolidation gap surfaced as an unresolved design tension
 
@@ -556,7 +577,7 @@ went deeper into §7.2 (Reconsolidation), which the paper itself only sketches a
 out a candidate formula set for resolving contradictory memories via versioned graph claims (Research.md topic
 10) — added above as Formulae row 5, explicitly not adopted. That candidate procedure is an active, judged
 resolution, which sits in real tension with Principle 4's decision to defer all conflict resolution to passive
-decay; row 5's note flags this, and the reconciliation is left open pending an ADR. No code changed; `mem_manage/`
-remains empty.
+decay; row 5's note flags this, and the reconciliation is left open pending an ADR. No code changed in this session;
+`mem_manage/` remained empty at this stage.
 
 ---
