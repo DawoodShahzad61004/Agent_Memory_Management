@@ -28,3 +28,6 @@ AGENTS.md
 
 chroma_store/memory_audit.jsonl
 .pytest_cache/
+
+
+run_logs/

@@ -8,17 +8,17 @@ numpy==2.5.2
 torch==2.14.0
 sentence-transformers==6.0.1
 
-# LLM clients (services/llm_setup.py, services/llm_caller.py). Note: only the
-# raw `groq` SDK is needed (llm_caller.py's exception-handling imports it
-# directly) — langchain-groq itself is not, since llm_setup.py only ever
-# constructs ChatOpenAI clients (no tool-calling anywhere in this repo, see
-# docs/Decisions.md ADR-010).
+# LLM clients (services/llm_setup.py, services/llm_caller.py). llm_setup.py
+# currently constructs ChatGroq clients; llm_caller.py's exception-handling
+# imports the raw `groq` SDK directly. langchain-groq==1.1.3 (latest) pins
+# groq<1.0.0, so groq is capped at 0.37.1 here rather than the 1.x line.
 langchain-openai==1.6.0
 openai==3.7.0
-groq==1.7.0
+groq==0.37.1
 httpx==0.28.1
 requests==2.34.2
 python-dotenv==1.2.3
+langchain_groq==1.1.3
 
 # tests
 pytest==9.1.1

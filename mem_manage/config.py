@@ -71,14 +71,14 @@ EMBEDDING_ENCODING_TIMEOUT_SECONDS = 30.0
 # memories that merely share a topic (that's the conflicting-versions case,
 # which is meant to survive as separate records - see Architecture.md
 # Principle 4).
-MERGE_SIMILARITY_THRESHOLD = 0.90
+MERGE_SIMILARITY_THRESHOLD = 0.60
 
 # --- LLM: one local OpenAI-compatible endpoint, two roles ---------------------
 # Same endpoint convention as memora_mini/config.py and Sample_Coding_Agent -
 # repo-root .env, loaded by absolute path (ADR-006/ADR-023).
 CUSTOM_API_BASE = os.getenv("CUSTOM_API_BASE", "")
-CUSTOM_API_KEY = os.getenv("CUSTOM_API_KEY", "not-needed")
-CUSTOM_API_MODEL_NAME = os.getenv("CUSTOM_API_MODEL_NAME", "llama-3.1-8b-instruct")
+CUSTOM_API_KEY = os.getenv("CUSTOM_API_KEY", "")
+CUSTOM_API_MODEL_NAME = os.getenv("CUSTOM_API_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 JUDGE_MODEL_NAME = os.getenv("JUDGE_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 
 MERGE_LLM_TEMPERATURE = 0.1

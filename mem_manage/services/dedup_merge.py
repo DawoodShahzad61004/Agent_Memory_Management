@@ -135,17 +135,45 @@ def merge_group(
     judge_call: LLMCall | None = None,
 ) -> DurableMemory:
     base = _deterministic_union(group)
-    if len(group) > 1 and llm_call is not None and config.MERGE_LLM_ENABLED:
-        text = _llm_merge_text(group, llm_call)
-        if text:
-            accepted = (
-                judge_call is None
-                or not config.MERGE_VALIDATION_ENABLED
-                or _judge_accepts(group, text, judge_call)
-            )
-            if accepted:
-                return replace(base, content=text, id=content_id(text))
-            logger.info("[DEDUP_MERGE] judge rejected LLM merge — using deterministic union")
+
+    if len(group) <= 1:
+        logger.info(
+            "[DEDUP_MERGE] singleton group (no near-duplicates) — no merge, no LLM call needed"
+        )
+        return base
+
+    if llm_call is None or not config.MERGE_LLM_ENABLED:
+        logger.info(
+            "[DEDUP_MERGE] LLM call skipped for group of %d (llm_call=%s, MERGE_LLM_ENABLED=%s) "
+            "— using deterministic union",
+            len(group),
+            llm_call is not None,
+            config.MERGE_LLM_ENABLED,
+        )
+        return base
+
+    logger.info("[DEDUP_MERGE] LLM merge call: making call for group of %d", len(group))
+    text = _llm_merge_text(group, llm_call)
+    if not text:
+        logger.info(
+            "[DEDUP_MERGE] LLM merge call returned no usable text — using deterministic union"
+        )
+        return base
+
+    if judge_call is None or not config.MERGE_VALIDATION_ENABLED:
+        logger.info(
+            "[DEDUP_MERGE] LLM judge call skipped (judge_call=%s, MERGE_VALIDATION_ENABLED=%s) "
+            "— accepting LLM merge unvalidated",
+            judge_call is not None,
+            config.MERGE_VALIDATION_ENABLED,
+        )
+        return replace(base, content=text, id=content_id(text))
+
+    logger.info("[DEDUP_MERGE] LLM judge call: making call to validate merge of %d entries", len(group))
+    if _judge_accepts(group, text, judge_call):
+        logger.info("[DEDUP_MERGE] judge accepted LLM merge")
+        return replace(base, content=text, id=content_id(text))
+    logger.info("[DEDUP_MERGE] judge rejected LLM merge — using deterministic union")
     return base
 
 

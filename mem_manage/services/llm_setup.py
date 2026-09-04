@@ -16,25 +16,43 @@ module, so importing the package doesn't require langchain_openai unless a
 real LLM merge is actually attempted.
 """
 from __future__ import annotations
+import os
 
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
+# from langchain_openai import ChatOpenAI
 
 from .. import config
 
-llm = ChatOpenAI(
-    base_url=config.CUSTOM_API_BASE,
-    api_key=config.CUSTOM_API_KEY,
-    model=config.CUSTOM_API_MODEL_NAME,
+llm = ChatGroq(
+    api_key=os.getenv("GROQ_API_KEY"),
+    model_name=os.getenv("GEN_MODEL_NAME", "gpt-oss-20b"),
     temperature=config.MERGE_LLM_TEMPERATURE,
     max_tokens=config.MERGE_LLM_MAX_TOKENS,
     max_retries=config.LLM_MAX_RETRIES,
 )
 
-judge_llm = ChatOpenAI(
-    base_url=config.CUSTOM_API_BASE,
-    api_key=config.CUSTOM_API_KEY,
-    model=config.JUDGE_MODEL_NAME,
+judge_llm = ChatGroq(
+    api_key=os.getenv("GROQ_API_KEY"),
+    model_name=os.getenv("GEN_MODEL_NAME", "gpt-oss-20b"),
     temperature=config.JUDGE_LLM_TEMPERATURE,
     max_tokens=config.JUDGE_LLM_MAX_TOKENS,
     max_retries=config.LLM_MAX_RETRIES,
 )
+
+# llm = ChatOpenAI(
+#     base_url=config.CUSTOM_API_BASE,
+#     api_key=config.CUSTOM_API_KEY,
+#     model=config.CUSTOM_API_MODEL_NAME,
+#     temperature=config.MERGE_LLM_TEMPERATURE,
+#     max_tokens=config.MERGE_LLM_MAX_TOKENS,
+#     max_retries=config.LLM_MAX_RETRIES,
+# )
+
+# judge_llm = ChatOpenAI(
+#     base_url=config.CUSTOM_API_BASE,
+#     api_key=config.CUSTOM_API_KEY,
+#     model=config.JUDGE_MODEL_NAME,
+#     temperature=config.JUDGE_LLM_TEMPERATURE,
+#     max_tokens=config.JUDGE_LLM_MAX_TOKENS,
+#     max_retries=config.LLM_MAX_RETRIES,
+# )
