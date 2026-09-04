@@ -14,6 +14,14 @@ def test_prune_bottom_percent_is_a_fraction():
     assert 0.0 < config.PRUNE_BOTTOM_PERCENT < 1.0
 
 
+def test_enable_pruning_is_a_bool():
+    assert isinstance(config.ENABLE_PRUNING, bool)
+
+
+def test_min_prune_budget_is_positive():
+    assert config.MIN_PRUNE_BUDGET > 0
+
+
 def test_merge_similarity_threshold_is_a_fraction():
     assert 0.0 < config.MERGE_SIMILARITY_THRESHOLD <= 1.0
 

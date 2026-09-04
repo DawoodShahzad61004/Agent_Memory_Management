@@ -48,15 +48,39 @@ def rerank_and_prune(
     """Sort by importance descending (stable - ties keep their input order)
     and drop the bottom `prune_fraction` of the list (config.PRUNE_BOTTOM_PERCENT
     if not given - read live, not captured as a def-time default, so a
-    config change takes effect without reloading this module). floor() means
-    a store smaller than 1/prune_fraction entries prunes nothing, by design:
-    pruning 5 entries down to "the bottom 20%" (1 entry) on a corpus that
-    small isn't a meaningful signal yet."""
-    if prune_fraction is None:
-        prune_fraction = config.PRUNE_BOTTOM_PERCENT
+    config change takes effect without reloading this module).
+
+    Pruning itself is gated and always skipped (memories only reranked,
+    never dropped) when either check fails - both read live, same as
+    prune_fraction above:
+    - config.ENABLE_PRUNING is False.
+    - the corpus's total content is under config.MIN_PRUNE_BUDGET characters:
+      too small a corpus for "the bottom prune_fraction" to be a meaningful
+      signal yet.
+    """
     indexed = sorted(
         enumerate(memories), key=lambda pair: pair[1].importance, reverse=True
     )
+
+    if not config.ENABLE_PRUNING:
+        logger.info("[PRUNE] skipped: ENABLE_PRUNING is False")
+        result = [memory for _, memory in indexed]
+        _log_retained(result)
+        return result
+
+    total_chars = sum(len(memory.content) for memory in memories)
+    if total_chars < config.MIN_PRUNE_BUDGET:
+        logger.info(
+            "[PRUNE] skipped: corpus is %d character(s), below MIN_PRUNE_BUDGET=%d",
+            total_chars,
+            config.MIN_PRUNE_BUDGET,
+        )
+        result = [memory for _, memory in indexed]
+        _log_retained(result)
+        return result
+
+    if prune_fraction is None:
+        prune_fraction = config.PRUNE_BOTTOM_PERCENT
     prune_count = floor(len(indexed) * prune_fraction)
     if prune_count <= 0:
         _log_retained([memory for _, memory in indexed])

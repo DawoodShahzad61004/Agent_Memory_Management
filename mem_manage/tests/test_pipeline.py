@@ -46,7 +46,8 @@ class TestCompactMarkdownScenarios:
         assert "tabs" in "".join(contents)
         assert "spaces-only" in "".join(contents)
 
-    def test_large_corpus_loses_its_bottom_twenty_percent(self, frozen_now, fake_embedder):
+    def test_large_corpus_loses_its_bottom_twenty_percent(self, frozen_now, fake_embedder, monkeypatch):
+        monkeypatch.setattr(config, "MIN_PRUNE_BUDGET", 0)  # fixture content is short; not what's under test here
         result = compact_markdown(LARGE_CORPUS_MD, now=frozen_now, embedder=fake_embedder, use_llm=False)
         assert len(result) == 8  # 10 mutually-distinct entries, none merge; floor(10*0.2)=2 pruned
 
@@ -62,7 +63,8 @@ class TestCompactMarkdownScenarios:
         assert len(result) == 1
         assert result[0].tag == "entry-one"
 
-    def test_compact_markdown_file_reads_from_disk(self, frozen_now, fake_embedder, tmp_path):
+    def test_compact_markdown_file_reads_from_disk(self, frozen_now, fake_embedder, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MIN_PRUNE_BUDGET", 0)  # fixture content is short; not what's under test here
         path = tmp_path / "episodic_log.md"
         path.write_text(LARGE_CORPUS_MD, encoding="utf-8")
         result = compact_markdown_file(path, now=frozen_now, embedder=fake_embedder, use_llm=False)
@@ -71,8 +73,9 @@ class TestCompactMarkdownScenarios:
 
 class TestExplicitProvenanceBoundary:
     def test_explicit_provenance_survives_a_prune_boundary_an_inferred_twin_would_not(
-        self, frozen_now, fake_embedder
+        self, frozen_now, fake_embedder, monkeypatch
     ):
+        monkeypatch.setattr(config, "MIN_PRUNE_BUDGET", 0)  # fixture content is short; not what's under test here
         # 3 high-scoring "padding" records (each mentions a unique salient
         # entity and a success marker -> composite score saturates at 1.0),
         # plus an explicit/inferred pair with otherwise-neutral, no-entity

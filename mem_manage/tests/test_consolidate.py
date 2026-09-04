@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from mem_manage import config
 from mem_manage.consolidate import refresh_decay, rerank_and_prune
 from mem_manage.memory import DurableMemory
@@ -66,6 +68,14 @@ class TestRefreshDecay:
 
 
 class TestRerankAndPrune:
+    """These tests are about the sort/floor/fraction mechanics, not the
+    ENABLE_PRUNING/MIN_PRUNE_BUDGET gates (covered separately below) - the
+    budget is neutralized here so short fixture content doesn't trip it."""
+
+    @pytest.fixture(autouse=True)
+    def _unlimited_prune_budget(self, monkeypatch):
+        monkeypatch.setattr(config, "MIN_PRUNE_BUDGET", 0)
+
     def test_exact_prune_count_at_n_ten(self, frozen_now):
         memories = [_memory(frozen_now, importance=i / 10, memory_id=str(i)) for i in range(10)]
         result = rerank_and_prune(memories, prune_fraction=0.20)
@@ -116,3 +126,34 @@ class TestRerankAndPrune:
         memories = [_memory(frozen_now, importance=i / 10, memory_id=str(i)) for i in range(10)]
         result = rerank_and_prune(memories)
         assert len(result) == 5
+
+
+class TestPruneGating:
+    """ENABLE_PRUNING and MIN_PRUNE_BUDGET, read live from config - both
+    independent of corpus size (unlike the floor()-driven small-N case
+    above, which only zeroes out prune_count for a handful of entries)."""
+
+    def test_disabled_pruning_keeps_everything_but_still_reranks(self, frozen_now, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_PRUNING", False)
+        monkeypatch.setattr(config, "MIN_PRUNE_BUDGET", 0)
+        memories = [
+            _memory(frozen_now, importance=0.3, memory_id="a"),
+            _memory(frozen_now, importance=0.9, memory_id="b"),
+            _memory(frozen_now, importance=0.6, memory_id="c"),
+        ]
+        result = rerank_and_prune(memories, prune_fraction=0.20)
+        assert [m.id for m in result] == ["b", "c", "a"]
+
+    def test_corpus_under_budget_prunes_nothing(self, frozen_now):
+        memories = [_memory(frozen_now, importance=i / 10, memory_id=str(i)) for i in range(10)]
+        total_chars = sum(len(m.content) for m in memories)
+        assert total_chars < config.MIN_PRUNE_BUDGET  # sanity: short fixture content
+        result = rerank_and_prune(memories, prune_fraction=0.20)
+        assert len(result) == 10
+
+    def test_corpus_at_budget_prunes_normally(self, frozen_now, monkeypatch):
+        memories = [_memory(frozen_now, importance=i / 10, memory_id=str(i)) for i in range(10)]
+        total_chars = sum(len(m.content) for m in memories)
+        monkeypatch.setattr(config, "MIN_PRUNE_BUDGET", total_chars)
+        result = rerank_and_prune(memories, prune_fraction=0.20)
+        assert len(result) == 8
