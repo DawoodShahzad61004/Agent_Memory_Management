@@ -4,9 +4,13 @@ deterministic fallback) over DurableMemory records.
 Rewritten from the RAG-work sibling project's version, which grouped
 LangGraph retrieval chunks (`GraphState`, `nodes.nac._merge_similar_chunks`,
 `validators.validate_merge`, `switches`, `timing_tracker`) - none of which
-exist here. The grouping *pattern* (embed once, pairwise cosine similarity
-against each group's anchor, threshold cutoff) carries over; everything
-downstream of it is new, built for DurableMemory instead of retrieval chunks.
+exist here. The grouping *pattern* (embed once, pairwise cosine similarity,
+threshold cutoff) carries over; everything downstream of it is new, built
+for DurableMemory instead of retrieval chunks. The grouping *rule* is
+complete-linkage (a candidate must be similar enough to every member already
+in the group, not just the first one) - chosen over single-linkage/anchor-
+only or transitive closure because a merge here concatenates the whole group
+into one memory, so a false merge is costlier than a missed one.
 
 merge_group() always computes the deterministic union first - the ADR-014
 precedent this repo's own memora_mini established, so a merge can never fail
@@ -17,6 +21,7 @@ judge_call, replaces just the merged content.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
 from typing import Callable, Sequence
 
@@ -27,18 +32,35 @@ logger = logging.getLogger(__name__)
 
 LLMCall = Callable[[list[dict]], "str | None"]
 
+# Matches the literal prefix `run_shared_command()` in the Bhai-To-Bhai
+# orchestrator (orchestrator/artifacts.py) writes onto every auto-recorded
+# test/command failure: `[auto] `<command>` failed (exit <code>): <symptom>`.
+# That prefix is identical across unrelated failures (same command, same exit
+# code), so on short entries it dominates the sentence embedding and pulls
+# topically unrelated auto-failures together - stripped here so only the
+# symptom drives similarity. Stored/merged content is untouched; this only
+# affects what gets embedded for grouping.
+_AUTO_FAILURE_PREFIX = re.compile(r"^\[auto\] `.*?` failed \(exit -?\d+\): ")
+
+
+def _embedding_text(content: str) -> str:
+    stripped = _AUTO_FAILURE_PREFIX.sub("", content, count=1)
+    return stripped if stripped.strip() else content
+
 
 def find_near_duplicate_groups(
     memories: Sequence[DurableMemory], embedder, threshold: float
 ) -> list[list[int]]:
-    """Group indices into `memories` by pairwise cosine similarity against
-    each group's anchor (the first unclaimed index) - not transitive
-    closure, matching the original RAG pattern this was adapted from.
-    Singleton groups (no duplicate found) are included too, so callers have
-    one uniform list of groups to merge/pass through."""
+    """Group indices into `memories` by complete-linkage cosine similarity: a
+    candidate joins a group only if it's similar enough to every member
+    already in it, not just the first (anchor) one - so a candidate that's
+    similar to one member but not another doesn't fold in and drag an
+    unrelated entry into the merge. Singleton groups (no duplicate found)
+    are included too, so callers have one uniform list of groups to
+    merge/pass through."""
     if not memories:
         return []
-    embeddings = embedder.generate_embedding([m.content for m in memories])
+    embeddings = embedder.generate_embedding([_embedding_text(m.content) for m in memories])
     claimed: set[int] = set()
     groups: list[list[int]] = []
     for i in range(len(memories)):
@@ -48,8 +70,10 @@ def find_near_duplicate_groups(
         for j in range(i + 1, len(memories)):
             if j in claimed:
                 continue
-            similarity = embedder.cosine_similarity(embeddings[i], embeddings[j])
-            if similarity >= threshold:
+            if all(
+                embedder.cosine_similarity(embeddings[member], embeddings[j]) >= threshold
+                for member in group
+            ):
                 group.append(j)
                 claimed.add(j)
         claimed.add(i)

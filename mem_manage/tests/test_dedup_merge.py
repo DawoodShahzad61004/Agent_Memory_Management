@@ -6,6 +6,7 @@ sentence-transformers/LangChain clients (see conftest.py).
 from __future__ import annotations
 
 from datetime import timedelta
+from difflib import SequenceMatcher
 
 import pytest
 
@@ -16,6 +17,7 @@ from mem_manage.services.dedup_merge import (
     find_near_duplicate_groups,
     merge_group,
 )
+from mem_manage.services.dedup_merge import _embedding_text
 
 
 def _memory(frozen_now, *, content, tag="t", importance=0.5, offset_hours=0, provenance="inferred"):
@@ -33,10 +35,64 @@ def _memory(frozen_now, *, content, tag="t", importance=0.5, offset_hours=0, pro
     )
 
 
+# --- _embedding_text: strips the Bhai-To-Bhai `[auto] ...` boilerplate ---------
+
+
+class TestEmbeddingText:
+    def test_strips_auto_failure_prefix(self):
+        content = "[auto] `pytest` failed (exit 1): groq.AuthenticationError: Invalid API Key"
+        assert _embedding_text(content) == "groq.AuthenticationError: Invalid API Key"
+
+    def test_strips_multi_word_commands_and_arbitrary_exit_codes(self):
+        content = "[auto] `pytest tests/test_compact.py` failed (exit 2): AssertionError: boom"
+        assert _embedding_text(content) == "AssertionError: boom"
+
+    def test_leaves_non_auto_content_unchanged(self):
+        content = "Groq client initialization must happen after config validation."
+        assert _embedding_text(content) == content
+
+    def test_falls_back_to_full_content_when_stripping_would_leave_nothing(self):
+        content = "[auto] `pytest` failed (exit 1): "
+        assert _embedding_text(content) == content
+
+
 # --- find_near_duplicate_groups ------------------------------------------------
 
 
 class TestFindNearDuplicateGroups:
+    def test_auto_failure_boilerplate_is_stripped_before_embedding(self, frozen_now):
+        # Two auto-recorded failures share the exact `[auto] `pytest` failed
+        # (exit 1): ` prefix - Bhai-To-Bhai's run_shared_command() emits that
+        # same literal text for every failure of the same command/exit code -
+        # but are otherwise unrelated. Only the post-prefix symptom should
+        # reach the embedder, so a shared template can't manufacture a
+        # false near-duplicate group.
+        seen_texts: list[str] = []
+
+        class RecordingEmbedder:
+            def generate_embedding(self, texts):
+                seen_texts.extend(texts)
+                return list(texts)
+
+            def cosine_similarity(self, a, b):
+                return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+        a = _memory(
+            frozen_now,
+            content="[auto] `pytest` failed (exit 1): groq.AuthenticationError: Invalid API Key",
+            offset_hours=0,
+        )
+        b = _memory(
+            frozen_now,
+            content="[auto] `pytest` failed (exit 1): ValueError: Unknown format code 'f'",
+            offset_hours=1,
+        )
+        find_near_duplicate_groups([a, b], RecordingEmbedder(), config.MERGE_SIMILARITY_THRESHOLD)
+        assert seen_texts == [
+            "groq.AuthenticationError: Invalid API Key",
+            "ValueError: Unknown format code 'f'",
+        ]
+
     def test_two_similar_memories_group_together(self, frozen_now, fake_embedder):
         a = _memory(frozen_now, content="This repo uses pytest fixtures for tests.")
         b = _memory(frozen_now, content="This repo uses pytest fixtures for all tests.")
@@ -70,6 +126,28 @@ class TestFindNearDuplicateGroups:
         class MatrixEmbedder:
             def generate_embedding(self, texts):
                 return list(range(len(texts)))  # indices double as "vectors"
+
+            def cosine_similarity(self, a, b):
+                return similarities[frozenset((a, b))]
+
+        memories = [_memory(frozen_now, content=f"content {i}", offset_hours=i) for i in range(3)]
+        groups = find_near_duplicate_groups(memories, MatrixEmbedder(), 0.90)
+        assert groups == [[0, 1], [2]]
+
+    def test_complete_linkage_rejects_a_candidate_not_similar_to_every_member(self, frozen_now):
+        # 0~1 and 0~2 both clear the threshold, but 1~2 does not: candidate 2
+        # is similar to the anchor (0) yet not to the other member already in
+        # the group (1), so it must NOT join - anchor-only grouping would
+        # wrongly merge all three here.
+        similarities = {
+            frozenset((0, 1)): 0.95,
+            frozenset((0, 2)): 0.95,
+            frozenset((1, 2)): 0.30,
+        }
+
+        class MatrixEmbedder:
+            def generate_embedding(self, texts):
+                return list(range(len(texts)))
 
             def cosine_similarity(self, a, b):
                 return similarities[frozenset((a, b))]
