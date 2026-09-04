@@ -7,6 +7,7 @@ first is what makes the comparison meaningful.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import datetime
 from math import floor
@@ -15,6 +16,8 @@ from typing import Sequence
 from . import config
 from .importance import passive_decay
 from .memory import DurableMemory
+
+logger = logging.getLogger(__name__)
 
 
 def refresh_decay(
@@ -51,8 +54,50 @@ def rerank_and_prune(
     small isn't a meaningful signal yet."""
     if prune_fraction is None:
         prune_fraction = config.PRUNE_BOTTOM_PERCENT
-    ranked = sorted(memories, key=lambda memory: memory.importance, reverse=True)
-    prune_count = floor(len(ranked) * prune_fraction)
+    indexed = sorted(
+        enumerate(memories), key=lambda pair: pair[1].importance, reverse=True
+    )
+    prune_count = floor(len(indexed) * prune_fraction)
     if prune_count <= 0:
-        return ranked
-    return ranked[: len(ranked) - prune_count]
+        _log_retained([memory for _, memory in indexed])
+        return [memory for _, memory in indexed]
+
+    split = len(indexed) - prune_count
+    retained_pairs = indexed[:split]
+    pruned_pairs = indexed[split:]
+
+    logger.info(
+        "[PRUNE] pruning %d of %d memorie(s); original indices pruned: %s",
+        prune_count,
+        len(indexed),
+        [original_index for original_index, _ in pruned_pairs],
+    )
+    for original_index, memory in pruned_pairs:
+        logger.debug(
+            "[PRUNE] pruned index=%d id=%s tag=%s importance=%.3f content=%r",
+            original_index,
+            memory.id,
+            memory.tag,
+            memory.importance,
+            memory.content,
+        )
+
+    retained = [memory for _, memory in retained_pairs]
+    _log_retained(retained)
+    return retained
+
+
+def _log_retained(memories: Sequence[DurableMemory]) -> None:
+    for memory in memories:
+        logger.debug(
+            "[CONSOLIDATE] retained memory id=%s tag=%s importance=%.3f "
+            "created_at=%s last_accessed_at=%s provenance=%s merged_from=%s content=%r",
+            memory.id,
+            memory.tag,
+            memory.importance,
+            memory.created_at.isoformat(),
+            memory.last_accessed_at.isoformat(),
+            memory.provenance,
+            memory.merged_from,
+            memory.content,
+        )

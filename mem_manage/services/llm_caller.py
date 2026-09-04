@@ -312,6 +312,7 @@ def _invoke_once(
         f"(~{input_chars // 4} tokens est.), {len(messages)} messages, "
         f"expected output cap={expected_out if expected_out is not None else 'n/a'} tokens"
     )
+    logger.debug(f"  [{caller_tag}] LLM input messages: {messages!r}")
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _executor:
@@ -330,6 +331,7 @@ def _invoke_once(
             f"output={usage.get('completion_tokens', 'n/a')} "
             f"total={usage.get('total_tokens', 'n/a')}"
         )
+        logger.debug(f"  [{caller_tag}] LLM output content: {content!r}")
         return LLMResult(ok=True, response=response, content=content)
 
     # ── Groq-specific errors ──────────────────────────────────────────────────

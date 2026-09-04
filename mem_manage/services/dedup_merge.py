@@ -54,6 +54,12 @@ def find_near_duplicate_groups(
                 claimed.add(j)
         claimed.add(i)
         groups.append(group)
+        if len(group) > 1:
+            logger.info(
+                "[DEDUP_MERGE] near-duplicate group found (threshold=%.3f): indices %s will be merged",
+                threshold,
+                group,
+            )
     return groups
 
 

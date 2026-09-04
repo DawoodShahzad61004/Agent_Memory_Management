@@ -3,6 +3,11 @@
 # and the real sentence-transformers/EmbeddingManager integration test runs
 # clean against this set; only the live-LLM integration test needs
 # CUSTOM_API_BASE configured and reachable, and skips cleanly otherwise.
+#
+# torch: plain `torch==2.14.0` resolves to the CPU-only wheel from PyPI.
+# For CUDA (e.g. Blackwell/RTX 50-series laptops, sm_120, needs CUDA 12.8+),
+# install from the PyTorch CUDA index instead of PyPI, e.g.:
+#   uv pip install --index-url https://download.pytorch.org/whl/cu130 torch==2.14.0+cu130
 
 numpy==2.5.2
 torch==2.14.0
