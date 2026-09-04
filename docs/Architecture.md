@@ -10,9 +10,13 @@ and contradictory entries sit side by side with nothing to break the tie. So **f
 mechanism here, not storage cleanup**: every record carries a decaying activation value, and decay is what
 resolves conflicts, bounds growth, and keeps recall precise.
 
-> **Current state: implementation complete, testing phase.** `mem_manage/` is fully built and tested (108 tests,
-> 107 passing, 1 skipped pending LLM endpoint); the CLI is verified working end-to-end. The module is usable as-is
-> for compacting episodic-memory markdown logs; the next milestone is integration into `Sample_Coding_Agent/`.
+> **Current state: implementation complete, hardened, testing phase.** `mem_manage/` is fully built and tested (119
+> tests passing); the CLI is verified working end-to-end. Since initial implementation (2026-09-03), the pipeline
+> has been hardened with phase-level DEBUG/INFO logging across every stage (`mem_manage/run_logs/*.debug.log`),
+> GPU-accelerated embeddings (CUDA verified working, not just theoretically available), two explicit pruning gates
+> (`ENABLE_PRUNING`, `MIN_PRUNE_BUDGET`), and a complete-linkage near-duplicate grouping algorithm that replaced an
+> anchor-only comparison shown to produce false merges. The module is usable as-is for compacting episodic-memory
+> markdown logs; the next milestone is integration into `Sample_Coding_Agent/`.
 
 ### How the repo got here
 
@@ -433,13 +437,13 @@ directly why the SDK approach doesn't work here (ADR-010).
 
 | Component | Technology | Notes |
 |---|---|---|
-| **`mem_manage/` core** | Pure Python, hand-written | No tool-calling, no cloud egress, deterministic mutation. Five modules: `config.py` (centralized constants), `importance.py` (scoring), `memory.py` (record shape), `consolidate.py` (decay/prune), `compact.py` (CLI orchestrator). Services (`dedup_merge.py`, adapted `embedding_manager.py`/`llm_caller.py`/`llm_setup.py`/`logger_config.py`). |
-| **Test suite** | `pytest` (108 tests) | 107 passing, 1 skipped (pending LLM). Comprehensive coverage: config validation, all five importance factors, memory lifecycle, dedup/merge (all branches), passive decay, prune, end-to-end pipeline. All numeric assumptions verified empirically. |
+| **`mem_manage/` core** | Pure Python, hand-written | No tool-calling, no cloud egress, deterministic mutation. Five modules: `config.py` (centralized constants, now including `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET`, ADR-031), `importance.py` (scoring), `memory.py` (record shape), `consolidate.py` (decay/prune), `compact.py` (CLI orchestrator, now with phase-level `[PARSE]`/`[SCORE]`/`[DEDUP_MERGE]`/`[CONSOLIDATE]`/`[PRUNE]`/`[OUTPUT]` logging). Services (`dedup_merge.py` — near-duplicate grouping now complete-linkage, ADR-032, with `[auto] ...` boilerplate stripped before embedding, BUG-011 — plus adapted `embedding_manager.py`/`llm_caller.py`/`llm_setup.py`/`logger_config.py`, the last now actually wired in). |
+| **Test suite** | `pytest` (119 tests) | All passing. Comprehensive coverage: config validation, all five importance factors, memory lifecycle, dedup/merge (all branches, including complete-linkage grouping and boilerplate-stripping), passive decay, prune (including the `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET` gates), end-to-end pipeline. All numeric assumptions verified empirically. |
 | Graph orchestration | LangGraph `StateGraph` (`langgraph==1.2.9`) | `memora_mini` (five nodes, one conditional edge) and `Sample_Coding_Agent` (one self-looping node) |
 | Memory extraction/classification | Hand-written `memory/extract.py` + `memory/classify.py` | Plain-JSON prompts + `json_fix.py` repair; no tool-calling, no `trustcall` |
 | Memory writes | Hand-written `memory/apply.py` | Pure Python, deterministic; the model never proposes a delete |
-| LLM | `openai` client against a self-hosted OpenAI-compatible endpoint (`CUSTOM_API_BASE`/`CUSTOM_API_KEY`/`CUSTOM_API_MODEL_NAME`, ~`llama-3.1-8b-instruct`) | Every role (generate, judge, extract, classify) routes to the same endpoint |
-| Embeddings | `sentence-transformers` `all-MiniLM-L6-v2` | Local only, CUDA if available, 384-dim, normalised |
+| LLM | `openai`/`langchain-groq` clients against a self-hosted OpenAI-compatible endpoint or Groq (`CUSTOM_API_BASE`/`CUSTOM_API_KEY`/`CUSTOM_API_MODEL_NAME`, ~`llama-3.1-8b-instruct`; Groq as a stop-gap while the local endpoint is down, `groq==0.37.1` pinned for `langchain-groq==1.1.3` compatibility, BUG-007) | Every role (generate, judge, extract, classify) routes to the same endpoint |
+| Embeddings | `sentence-transformers` `all-MiniLM-L6-v2` | Local only, CUDA-accelerated (verified on an RTX 5050 Laptop GPU, `torch==2.14.0+cu130` — see BUG-009; falls back to CPU automatically if unavailable), 384-dim, normalised |
 | Vector storage | ChromaDB `PersistentClient`, cosine distance | One factory (`store/chroma_store.open_collection`) creates every collection |
 | Third-party memory service | `mem0ai` hosted Platform (`api.mem0.ai`) | `Sample_Coding_Agent/` only, pre-conversion; to be removed with the `mem_manage/` swap (ADR-022) |
 | Structured-output repair | `json_repair` | Tier 2 of `json_fix.py`, between fence-stripping and Pydantic validation |
@@ -579,5 +583,35 @@ out a candidate formula set for resolving contradictory memories via versioned g
 resolution, which sits in real tension with Principle 4's decision to defer all conflict resolution to passive
 decay; row 5's note flags this, and the reconciliation is left open pending an ADR. No code changed in this session;
 `mem_manage/` remained empty at this stage.
+
+### 2026-09-04 — Pipeline hardened: observability, GPU acceleration, tunable pruning, correct grouping
+
+A working-but-unpolished pipeline (2026-09-03) was hardened into one that's inspectable, faster on this hardware,
+and provably more correct at consolidation. Getting `python -m mem_manage.compact` running at all first required
+fixing a three-link crash chain (an unused `ChatGroq` import, an incompatible `groq`/`langchain-groq` pin, and a
+misplaced `.env`; BUG-006 through BUG-008) — the module's own service files hadn't been exercised end-to-end since
+the local LLM endpoint went down and Groq became the temporary stand-in.
+
+Observability was the largest addition: `logger_config.py`'s `setup_logging()` — fully built on 2026-09-03 but
+never called — is now wired into `compact._main`, with every pipeline phase (`[PARSE]`, `[SCORE]`,
+`[DEDUP_MERGE]`, `[CONSOLIDATE]`, `[PRUNE]`, `[OUTPUT]`) logging its input and output, every dedup/merge group
+logging whether an LLM call was made or skipped and why, every LLM call's full input/output logged at DEBUG in
+`llm_caller.py`, and every retained/pruned memory's complete fields logged at DEBUG in `consolidate.py`. All of
+this lands in `mem_manage/run_logs/*.debug.log`, separate from the unchanged, truncated console preview.
+
+The embedding model was confirmed and fixed to actually use CUDA (`torch==2.14.0+cu130`, verified against an RTX
+5050 Laptop GPU — BUG-009) rather than silently running on CPU. `consolidate.py` gained two explicit pruning gates,
+`ENABLE_PRUNING` and `MIN_PRUNE_BUDGET` (ADR-031), replacing an undocumented side effect of the prune-fraction
+math as the small-corpus safety net.
+
+The most substantive correctness change: `find_near_duplicate_groups()`'s grouping rule changed from anchor-only
+comparison to complete-linkage (ADR-032), after a user-reported concern that only pairs, not larger genuine
+clusters, were merging led to root-causing a real false-merge case. That investigation (Research.md topics 11-12)
+traced the false merge to a shared, literal `[auto] ...` boilerplate prefix — sourced to the sibling project
+`Bhai-To-Bhai`'s `orchestrator/artifacts.py` — dominating the embedder's similarity judgment regardless of topic;
+the fix (BUG-011) strips that boilerplate before embedding, verified to drop the confirmed false-merge similarity
+from 0.625 to 0.399. Test count grew from 108 to 119 across the session, all passing, no unintended behavior
+change. Tracked in Status.md (2026-09-04), Decisions.md ADR-031/ADR-032, Bugs.md BUG-006 through BUG-011,
+Research.md topics 11-12, this changelog, and the Technology Stack table above.
 
 ---

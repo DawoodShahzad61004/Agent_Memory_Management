@@ -8,10 +8,12 @@ degrades: retrieval gets noisier, stale conventions outlive the code they descri
 sit side by side with nothing to break the tie. This module treats *forgetting* as a first-class mechanism rather
 than a storage-cleanup afterthought.
 
-> **Status: implementation complete, testing phase.** `mem_manage/` is built, tested (107/108 passing tests),
-> and CLI-verified end-to-end. The module is usable for compacting episodic-memory markdown logs right now;
-> integration into `Sample_Coding_Agent/` is the next step. See [`docs/Architecture.md`](docs/Architecture.md) for
-> the architecture and [`docs/Status.md`](docs/Status.md) for the implementation timeline.
+> **Status: implementation complete, hardened, testing phase.** `mem_manage/` is built, tested (119/119 passing
+> tests), and CLI-verified end-to-end. Since first implementation it's been hardened with full pipeline logging,
+> GPU-accelerated embeddings, tunable pruning gates, and a corrected near-duplicate grouping algorithm. The module
+> is usable for compacting episodic-memory markdown logs right now; integration into `Sample_Coding_Agent/` is the
+> next step. See [`docs/Architecture.md`](docs/Architecture.md) for the architecture and
+> [`docs/Status.md`](docs/Status.md) for the implementation timeline.
 
 ## Design principles
 
@@ -44,8 +46,8 @@ row 5 for the open question.
 
 | Path | Role |
 |---|---|
-| `mem_manage/` | **The module.** The deliverable. Complete: config, importance scoring, memory shape, consolidation, dedup/merge, and CLI. All constants centralized, all tests passing. Awaits integration into the test harness. |
-| `mem_manage/tests/` | **Test suite.** 108 tests covering config, scoring, memory lifecycle, decay, pruning, and end-to-end pipeline. All numeric assumptions verified empirically. |
+| `mem_manage/` | **The module.** The deliverable. Complete: config, importance scoring, memory shape, consolidation, dedup/merge, and CLI. All constants centralized, all tests passing. Full pipeline logging to `mem_manage/run_logs/`, GPU-accelerated embeddings, and tunable pruning gates (`ENABLE_PRUNING`, `MIN_PRUNE_BUDGET` in `config.py`). Awaits integration into the test harness. |
+| `mem_manage/tests/` | **Test suite.** 119 tests covering config, scoring, memory lifecycle, decay, pruning (including the pruning gates), dedup/merge (including complete-linkage grouping), and end-to-end pipeline. All numeric assumptions verified empirically. |
 | `Sample_Coding_Agent/` | **Test harness.** The agent `mem_manage/` gets wired into and exercised against. Currently a single-file LangGraph chatbot inherited from the Mem0 evaluation; to be converted from a customer-support persona to a coding agent, with Mem0 replaced by `mem_manage/`. |
 | `memora_mini/` | **Prior art, working.** A native reimplementation of LangMem's memory taxonomy — supersede-not-delete lifecycle, strength-based recall with recency decay, offline extract→classify→apply consolidation. Several of its mechanisms are direct antecedents of `mem_manage/`'s. |
 | `LangMem/` | Reference material for the LangMem evaluation. Not executable. |
@@ -88,9 +90,17 @@ uv pip install -r mem_manage/requirements.txt
 Sample_Coding_Agent/.venv/Scripts/python.exe Sample_Coding_Agent/main.py
 ```
 
-Live LLM calls need `CUSTOM_API_BASE` / `CUSTOM_API_KEY` / `CUSTOM_API_MODEL_NAME` in the repo-root `.env`;
-`Sample_Coding_Agent/main.py` additionally needs `MEM0_API_KEY` until its Mem0 dependency is replaced by
-`mem_manage/`. The test suite and the structural parts of `demo.py` need neither.
+Live LLM calls need `CUSTOM_API_BASE` / `CUSTOM_API_KEY` / `CUSTOM_API_MODEL_NAME` in the repo-root `.env`
+(`GROQ_API_KEY` too, if using Groq as a stand-in while the local endpoint is down); `Sample_Coding_Agent/main.py`
+additionally needs `MEM0_API_KEY` until its Mem0 dependency is replaced by `mem_manage/`. The `.env` file must live
+at the **repo root**, not inside `mem_manage/` — `config.py` only looks there. The test suite and the structural
+parts of `demo.py` need neither.
+
+Every `mem_manage.compact` run writes a full debug log (every pipeline phase's input/output, every LLM call, every
+retained/pruned memory) to `mem_manage/run_logs/compact_<timestamp>.debug.log` — the console only ever shows a
+truncated preview. The embedding model uses CUDA automatically if `torch` was installed with CUDA support (a plain
+`pip`/`uv pip install torch` defaults to a CPU-only wheel — see the CUDA wheel-index note in
+`mem_manage/requirements.txt` if `EmbeddingManager` reports `device: cpu` on a machine with a GPU).
 
 ## Documentation
 

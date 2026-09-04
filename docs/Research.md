@@ -117,3 +117,27 @@
 | **Relevance to Project** | Fills the one gap Architecture.md's Formulae table flagged but had no material for (reconsolidation), and adds detail (the consolidation percentile bands, the maturation sigmoid's three retrieval zones, the quarantine/TTL dedup filter) to formulas already listed there — see Architecture.md § "Formulae" for the cross-reference and the open Principle-4-vs-reconsolidation tension it now flags. Settling that tension needs its own ADR before any of this reaches `mem_manage/`. |
 
 ---
+
+## 11. Sibling project `Bhai-To-Bhai` — exact origin of the `[auto] ...` episodic-entry boilerplate
+
+| Field | Detail |
+|---|---|
+| **Topic** | The exact literal format of the auto-generated `[auto] ...` entries appearing in `learnings.md`, and where they actually come from — read-only cross-project lookup into the sibling repo `Bhai-To-Bhai/`. |
+| **Date** | 2026-09-04 |
+| **Findings** | Traced to `Bhai-To-Bhai/orchestrator/artifacts.py::run_shared_command()`, which wraps every shell command a task agent runs. On a non-zero exit it emits `finding = f"[auto] \`{command_str}\` failed (exit {result.returncode}): {symptom}"`, where `symptom = _first_nonblank_line(result.stderr) or _first_nonblank_line(result.stdout)`, truncated to 300 chars — the only part of the string that carries topic-specific content. `append_learning()` then wraps that finding with a `## <UTC timestamp> — <task_id>` header, which is exactly `learnings.md`'s own header format. `Bhai-To-Bhai/docs/Bugs.md` #52 independently confirms the relationship: it explicitly names unbounded growth of this same `learnings.md` file as the reason `mem_manage`'s compaction module was built in the first place — so `Agent_Memory_Management` is `Bhai-To-Bhai`'s downstream consumer, not an unrelated project that happens to share a file format. |
+| **Conclusion** | The fixed, literal portion every auto-entry shares is `[auto] \`<command_str>\` failed (exit <code>): ` — deterministic, produced by one call site, and safe to pattern-match and strip with a plain regex rather than needing an LLM classification pass to separate "boilerplate" from "content." |
+| **Relevance to Project** | Directly enabled BUG-011's fix (`_embedding_text()` in `dedup_merge.py`) and confirms the boilerplate is a stable upstream artifact — not incidental phrasing likely to drift — so a regex strip is a durable fix, not a brittle one tied to today's exact wording. |
+
+---
+
+## 12. Empirical embedding-similarity investigation of `learnings.md`'s Groq-migration entries — why threshold tuning alone can't fix a false merge
+
+| Field | Detail |
+|---|---|
+| **Topic** | Whether a single `MERGE_SIMILARITY_THRESHOLD` value could make `find_near_duplicate_groups()` correctly cluster 5 hand-written `learnings.md` entries about one narrative (a Groq LLM migration: a requirements question, a T-011 auth-error test failure, an `llm_setup.py` fix note, a reviewer complaint about a hardcoded model name, and an architecture decision) into a single merge group — and specifically whether raising the threshold would eliminate a false-positive merge already visible in an actual run log. |
+| **Date** | 2026-09-04 |
+| **Findings** | Computed real pairwise cosine similarities using the production embedder (`sentence-transformers/all-MiniLM-L6-v2`, matching `EmbeddingManager`) against the entries from an actual run (`mem_manage/run_logs/compact_20260904_180837.debug.log`). At `MERGE_SIMILARITY_THRESHOLD=0.60`, the real grouping produced `[0, 4]` (a correct partial merge) and a cross-topic false positive — an unrelated Groq auth-error entry paired with an unrelated logging-format-failure entry, similarity 0.625 — instead of one group of 5. The true sibling pair *inside* the intended narrative cluster (the auth-error entry and the reviewer complaint that actually belongs with it) scored only 0.564-0.576 — lower than the confirmed false match. Since any threshold low enough to admit the true pair (≤0.564) necessarily also admits the false one (0.625 clears it too), the similarity *ranking* was inverted, not merely close — no single threshold value could separate the two. |
+| **Conclusion** | Recommended raising `MERGE_SIMILARITY_THRESHOLD` from 0.60 to ~0.65 as a partial, threshold-only mitigation (keeps both genuine merges, eliminates the one confirmed false merge, doesn't reintroduce any other false positive in the observed data) — but flagged it explicitly as treating the symptom, not the cause: the inversion traces to the shared `[auto] ...` boilerplate template (topic 11) dominating a short-text embedder's representation regardless of topic. The threshold-raise was superseded almost immediately by the actual fix (BUG-011): stripping the boilerplate before embedding instead, which made raising the threshold unnecessary — `MERGE_SIMILARITY_THRESHOLD` was left at 0.60. |
+| **Relevance to Project** | This investigation is what surfaced BUG-011's exact root cause and produced the concrete before/after similarity numbers used to verify its fix. It also directly informs the follow-up (2026-09-04, read-only) explaining why the same 5-entry narrative still doesn't fully collapse into one group even after the boilerplate fix — see Decisions.md ADR-032's Rationale, which resolves that as complete-linkage's intended, conservative trade-off rather than a remaining defect. |
+
+---

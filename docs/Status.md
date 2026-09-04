@@ -302,3 +302,77 @@
   technology stack, changelog); README.md updated; `graphify-out/` regenerated.
 
 ---
+
+#### 2026-09-04 — Pipeline hardened for observability, GPU use, and consolidation correctness; a false-merge root-caused and fixed
+
+* Fixed a three-link crash chain blocking `python -m mem_manage.compact` from running at all: an unused `ChatGroq`
+  import in `llm_setup.py` contradicting its own "stubs removed" docstring (BUG-006); a `groq==1.7.0`/
+  `langchain-groq==1.1.3` dependency conflict, resolved by repinning `groq` to `0.37.1` after confirming
+  `llm_caller.py`'s caught exception classes are stable across that version range (BUG-007); and a misplaced
+  `.env` at `mem_manage/.env` instead of the repo root, where `config.py` expects it per ADR-023/ADR-030, moved to
+  the repo root (BUG-008). The pipeline then ran end-to-end via Groq (the local LLM server was temporarily down),
+  producing 4 durable memories from 5 episodic records.
+* Diagnosed two observability gaps: `compact.py` had no persistence path (durable memories were only printed as
+  truncated console previews, then discarded on process exit) and `logger_config.py`'s fully-built `setup_logging()`
+  was never called anywhere in the package. Wired `setup_logging()` into `compact._main`, logging each durable
+  memory's full, untruncated content (plus id/timestamps/provenance/merged_from) at DEBUG — deliberately below the
+  console's INFO level, to avoid duplicating the existing truncated preview lines. Verified via
+  `mem_manage/run_logs/compact_<timestamp>.debug.log`.
+* Added phase-level input/output logging across all six pipeline phases (`[PARSE]`, `[SCORE]`, `[DEDUP_MERGE]`,
+  `[CONSOLIDATE]`, `[PRUNE]`, `[OUTPUT]`) plus explicit per-group logging in `merge_group()` of whether an LLM call
+  was made or skipped and why (singleton/no-call-needed, LLM disabled, LLM attempted, no-usable-text fallback,
+  judge accepted/rejected). Verified end-to-end: a real LLM call against an unconfigured Groq model 404'd and
+  correctly fell back to deterministic union. Extended further later the same day: LLM call input/output logged at
+  DEBUG in `llm_caller.py::_invoke_once` (the single funnel every LLM call — merge and judge alike — goes through);
+  indices of memories grouped for merging logged at INFO in `find_near_duplicate_groups`; and in
+  `rerank_and_prune`, pruned entries' original indices (INFO) and full fields (DEBUG), plus every retained memory's
+  complete fields (DEBUG), via a new `_log_retained` helper. No behavior change throughout — the test count climbed
+  108 → 113 → 114 → 119 across the session as coverage was added alongside each change.
+* Diagnosed and fixed the embedding model silently running on CPU despite a working RTX 5050 Laptop GPU: the
+  project's `.venv` had installed a CPU-only `torch==2.14.0+cpu` wheel (a red herring along the way — global-PATH
+  `pip` pointing at a *different* Python install that already had a CUDA torch briefly made it look like a driver
+  problem instead). Reinstalled `torch==2.14.0+cu130` from the PyTorch CUDA 13.0 wheel index directly into the
+  project `.venv`; verified `torch.cuda.is_available()` → `True` and `EmbeddingManager` reporting `device: cuda`.
+  Documented the required install command in `requirements.txt`, since a CUDA build can't be expressed as a normal
+  PyPI pin (BUG-009).
+* Implemented `ENABLE_PRUNING` and `MIN_PRUNE_BUDGET` as explicit pruning gates in `consolidate.py`, replacing the
+  prior incidental "a corpus under 5 memories prunes nothing" side effect of `floor(n * 0.20)` math with a
+  deliberate character-budget guard, per explicit user spec (ADR-031). 113/113 tests passed.
+* Investigated a user-reported concern that only 2 memories were merging at a time when 3-4 looked related.
+  Root-caused to `find_near_duplicate_groups()`'s anchor-only comparison (not transitive closure, but also not
+  requiring agreement with every group member). Presented and compared four clustering approaches (union-find,
+  complete-linkage, centroid/average-linkage, sklearn `AgglomerativeClustering`/HDBSCAN); adopted complete-linkage
+  growth — a candidate must clear the threshold against every claimed group member, not just the anchor — since a
+  false merge is costlier here than a missed one, given the merge step concatenates and LLM-summarizes the whole
+  group into one memory (ADR-032). 114/114 tests passed.
+* Traced the exact literal boilerplate template of `[auto] ...` episodic entries to the sibling project
+  `Bhai-To-Bhai/orchestrator/artifacts.py::run_shared_command()` (read-only cross-project lookup; confirmed via
+  `Bhai-To-Bhai/docs/Bugs.md` #52 that this repo is the downstream consumer of that project's `learnings.md`
+  output) (Research.md topic 11).
+* Used real embeddings against an actual run log to confirm that entries 0-4 (a 5-entry Groq-migration narrative in
+  `learnings.md`) were not merging into one group at `MERGE_SIMILARITY_THRESHOLD=0.60`, and that no single
+  threshold value could fix it: the confirmed false-merge pair (two unrelated auto-generated failures, 0.625
+  similarity) scored *higher* than the true sibling pair inside the intended cluster (0.564-0.576) — an inverted
+  ranking, not merely a close one (Research.md topic 12).
+* Root-caused the inversion to the shared `[auto] ...` boilerplate prefix dominating the short-text embedder's
+  representation regardless of topic, and fixed it by adding `_embedding_text()` to `dedup_merge.py` — strips the
+  literal boilerplate before text reaches the embedder, leaving stored/merged content untouched. Verified against
+  the real model: the confirmed false-merge pair dropped from 0.625 → 0.399, a second false pair from 0.576 →
+  0.156, both now safely clear of the unchanged 0.60 threshold (BUG-011). 119/119 tests passed.
+* Answered a follow-up question (read-only, no code changed) on why the same 5-entry Groq narrative still doesn't
+  fully collapse into one group even after the boilerplate fix: entry 3 (the reviewer complaint) is genuinely
+  below-threshold against one real group member (0.447) even though it clears threshold against another
+  (0.61-0.64) — complete-linkage correctly refuses to let one weak link admit it, and processing/claim order means
+  it's never even compared against the other candidate group. Confirmed, when asked to choose again among
+  clustering algorithms, that this is the intended trade-off of ADR-032's choice, not a defect.
+* Hit the same `graphify update <subpath>` stray-graph gotcha already logged on 2026-09-03 — it recurred despite
+  being noted for future reference, since a purely narrative reminder doesn't prevent reaching for the seemingly
+  natural "update just this subdirectory" invocation. Deleted the stray `mem_manage/graphify-out/` (untracked, no
+  data lost) and re-ran `graphify update .` from the repo root (BUG-010).
+* Tracked in: `mem_manage/services/llm_setup.py`, `mem_manage/requirements.txt`, `.env` (moved to repo root),
+  `mem_manage/compact.py`, `mem_manage/services/dedup_merge.py`, `mem_manage/services/llm_caller.py`,
+  `mem_manage/consolidate.py`, `mem_manage/config.py`, `mem_manage/tests/*` (test count 108 → 119); new
+  Decisions.md ADR-031, ADR-032; new Bugs.md BUG-006 through BUG-011; new Research.md topics 11, 12; README.md
+  updated; `graphify-out/` regenerated.
+
+---
