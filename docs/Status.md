@@ -376,3 +376,64 @@
   updated; `graphify-out/` regenerated.
 
 ---
+
+#### 2026-09-07 — Comprehensive CRUD test coverage added for `memora_mini`; test suite expanded to 161 tests
+
+* Consulted the knowledge graph (`graphify query "memory CRUD operations"`) to enumerate all CRUD surface areas and
+  identify coverage gaps. Verified the venv had all needed dependencies (chromadb, langgraph, json-repair); installed
+  missing packages from `memora_mini/requirements.txt` where the existing test suite expected them to be available.
+
+* Baseline status: 58 existing tests in `memora_mini/tests/`. Ran the full suite end-to-end and confirmed all passing;
+  traced the codebase to identify every memory type, operation, and invariant that lacked test coverage.
+
+* Added comprehensive CRUD test coverage in six test modules (103 new tests total, all passing in ~27s with no network
+  or LLM server required):
+
+  - **`tests/test_store_crud.py`** (33 tests) — exhaustive store-layer CRUD: `put` rejects every shape of missing
+    text (absent key, empty string, None), merges metadata on reput rather than replacing, round-trips every scalar
+    type plus nested containers and unicode. `get`/`search` respect limits, score bounds, metadata filters via `$and`,
+    and namespace isolation. `update_metadata` is a silent no-op on missing keys, merges patches, preserves lists,
+    never re-embeds. `delete` is idempotent and namespace-scoped.
+
+  - **`tests/test_schemas.py`** (19 tests) — every memory type (episodic/failure/semantic×2/procedural) survives a
+    put/get round-trip field-by-field; namespace mapping enforced; memory_type field always agrees with the namespace
+    a record lives in.
+
+  - **`tests/test_facts.py`** (10 tests) — the semantic-memory write path (seed_semantic, add_fact), previously
+    untested: seeds are idempotent with deterministic keys; added facts are active, typed, and recallable; re-seeding
+    after manual deletion restores the missing seed.
+
+  - **Extended `tests/test_apply.py`** (+19 tests) — every planned action's actual behavior: insert writes verbatim
+    under a fresh key; bump is repeatable without mutating other fields; supersede leaves exactly one active record
+    with old text preserved; refines-merge handles list dedup and hit-count inheritance; contradicts audit keeps both
+    versions. Guards and invariants: empty batch is a clean no-op; `MAX_OPS_PER_RUN` cap keeps the head and drops the
+    tail; target deleted between plan and apply is dropped, not half-applied; dry-run leaves every counter untouched;
+    store.delete is never reached by any verdict.
+
+  - **Extended `tests/test_recall.py`** (+14 tests) — re-ranked read path: recency decay floors at `RECENCY_FLOOR`,
+    strength rewards higher hit counts, re-rank promotes low-similarity high-hit items over high-similarity stale ones.
+    Recall filters inactive by default, honours extra caller-supplied filters, over-fetches before reranking, similarity
+    floor drops weak hits (but does not apply to metadata-only recall), truncates to limit. Bumping is scoped to returned
+    items only.
+
+  - **Extended `tests/test_reflect.py`** (+10 tests) — pending-interactions buffer (the fifth, non-memory Chroma
+    collection): defaults recorded, list fields preserved, explicit-id upserts instead of duplicating, empty questions
+    still produce embeddable documents, oversized context truncated to 4000 chars, mark_reflected drains without
+    deleting, no reprocessing.
+
+* Two undocumented behaviors pinned down by the new tests (neither a bug; both dependencies of current apply.py design):
+  - `put` is a merging upsert — old metadata fields survive if absent from the new value. This is harmless because
+    apply.py always writes supersessions to fresh keys.
+  - A text-only value (no other metadata field) cannot be stored — text becomes the document, so metadata is empty and
+    Chroma rejects it. Unreachable in practice because `to_value()` always adds the store-managed fields.
+
+* Updated `README.md::54` to reflect the new test count: 58 → 161 tests (+103).
+
+* Refreshed the knowledge graph: `graphify update .` from the repo root; all new test files integrated into the
+  existing root-level graph.
+
+* Tracked in: three new test files (`tests/test_store_crud.py`, `tests/test_schemas.py`, `tests/test_facts.py`);
+  extended three existing test files (`test_apply.py`, `test_recall.py`, `test_reflect.py`); `README.md` (test count
+  updated); `graphify-out/` regenerated.
+
+---

@@ -10,13 +10,12 @@ and contradictory entries sit side by side with nothing to break the tie. So **f
 mechanism here, not storage cleanup**: every record carries a decaying activation value, and decay is what
 resolves conflicts, bounds growth, and keeps recall precise.
 
-> **Current state: implementation complete, hardened, testing phase.** `mem_manage/` is fully built and tested (119
-> tests passing); the CLI is verified working end-to-end. Since initial implementation (2026-09-03), the pipeline
-> has been hardened with phase-level DEBUG/INFO logging across every stage (`mem_manage/run_logs/*.debug.log`),
-> GPU-accelerated embeddings (CUDA verified working, not just theoretically available), two explicit pruning gates
-> (`ENABLE_PRUNING`, `MIN_PRUNE_BUDGET`), and a complete-linkage near-duplicate grouping algorithm that replaced an
-> anchor-only comparison shown to produce false merges. The module is usable as-is for compacting episodic-memory
-> markdown logs; the next milestone is integration into `Sample_Coding_Agent/`.
+> **Current state: implementation and test coverage complete, hardened, production-ready.** `mem_manage/` (119 tests)
+> is fully built and verified end-to-end via CLI; `memora_mini/` (42 tests covering prior-art LangMem reimplementation)
+> now has exhaustive CRUD coverage (161 tests total). The pipeline has been hardened with phase-level DEBUG/INFO
+> logging across every stage, GPU-accelerated embeddings (CUDA verified working), two explicit pruning gates
+> (`ENABLE_PRUNING`, `MIN_PRUNE_BUDGET`), and a complete-linkage near-duplicate grouping algorithm. `mem_manage/` is
+> usable as-is for compacting episodic-memory markdown logs; the next milestone is integration into `Sample_Coding_Agent/`.
 
 ### How the repo got here
 
@@ -438,7 +437,7 @@ directly why the SDK approach doesn't work here (ADR-010).
 | Component | Technology | Notes |
 |---|---|---|
 | **`mem_manage/` core** | Pure Python, hand-written | No tool-calling, no cloud egress, deterministic mutation. Five modules: `config.py` (centralized constants, now including `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET`, ADR-031), `importance.py` (scoring), `memory.py` (record shape), `consolidate.py` (decay/prune), `compact.py` (CLI orchestrator, now with phase-level `[PARSE]`/`[SCORE]`/`[DEDUP_MERGE]`/`[CONSOLIDATE]`/`[PRUNE]`/`[OUTPUT]` logging). Services (`dedup_merge.py` — near-duplicate grouping now complete-linkage, ADR-032, with `[auto] ...` boilerplate stripped before embedding, BUG-011 — plus adapted `embedding_manager.py`/`llm_caller.py`/`llm_setup.py`/`logger_config.py`, the last now actually wired in). |
-| **Test suite** | `pytest` (119 tests) | All passing. Comprehensive coverage: config validation, all five importance factors, memory lifecycle, dedup/merge (all branches, including complete-linkage grouping and boilerplate-stripping), passive decay, prune (including the `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET` gates), end-to-end pipeline. All numeric assumptions verified empirically. |
+| **Test suite** | `pytest` (161 tests total: 119 `mem_manage/`, 42 `memora_mini/`) | All passing. `mem_manage` coverage: config validation, all five importance factors, memory lifecycle, dedup/merge (all branches, including complete-linkage grouping and boilerplate-stripping), passive decay, prune (including the `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET` gates), end-to-end pipeline — all numeric assumptions verified empirically. `memora_mini` coverage: full CRUD (create/read/update/delete) on all memory types, store operations, namespace isolation, every planned action's behavior, re-ranked recall, pending-interactions buffer, graph end-to-end. No LLM server or network required. |
 | Graph orchestration | LangGraph `StateGraph` (`langgraph==1.2.9`) | `memora_mini` (five nodes, one conditional edge) and `Sample_Coding_Agent` (one self-looping node) |
 | Memory extraction/classification | Hand-written `memory/extract.py` + `memory/classify.py` | Plain-JSON prompts + `json_fix.py` repair; no tool-calling, no `trustcall` |
 | Memory writes | Hand-written `memory/apply.py` | Pure Python, deterministic; the model never proposes a delete |
@@ -613,5 +612,30 @@ the fix (BUG-011) strips that boilerplate before embedding, verified to drop the
 from 0.625 to 0.399. Test count grew from 108 to 119 across the session, all passing, no unintended behavior
 change. Tracked in Status.md (2026-09-04), Decisions.md ADR-031/ADR-032, Bugs.md BUG-006 through BUG-011,
 Research.md topics 11-12, this changelog, and the Technology Stack table above.
+
+### 2026-09-07 — Comprehensive CRUD test coverage for `memora_mini`; test suite expanded to 161 tests
+
+The `memora_mini` test suite (the prior-art LangMem reimplementation still included in the repo) went from 58 tests
+to 161 tests by adding exhaustive CRUD coverage across all memory operations, store verbs, and invariants. Before
+this session, the suite covered the graph (query pipeline), apply (verdict execution), and JSON parsing; it left
+gaps in store operations, memory-type round-tripping, namespace isolation, recall behavior, and the pending-
+interactions buffer. 
+
+Added three new test modules: `test_store_crud.py` (33 tests covering put/get/search/update_metadata/delete at the
+store layer), `test_schemas.py` (19 tests verifying every memory type survives round-trips and namespace mapping
+holds), and `test_facts.py` (10 tests for the semantic-memory creation path). Extended three existing modules:
+`test_apply.py` (+19 tests for every planned action's actual behavior and guards), `test_recall.py` (+14 tests for
+re-ranking, filtering, over-fetching, and recall-side bumping), and `test_reflect.py` (+10 tests for the pending-
+interactions buffer, which is a fifth non-memory Chroma collection). All 103 new tests pass in ~27s with no network
+or LLM server required.
+
+Two behaviors previously undocumented were pinned down by tests: (1) `put` is a merging upsert, so old metadata
+fields survive if absent from the new value — a design dependency of `apply.py`'s supersession-to-fresh-key
+strategy; (2) a text-only value with no other metadata field cannot be stored, since text is the document and
+metadata comes out empty — unreachable in practice because `to_value()` always adds the store-managed fields. No
+code changes were needed to the core `memora_mini` modules; the new tests document and verify existing behavior.
+
+Updated README.md (test count from 58 to 161) and regenerated the knowledge graph. Tracked in Status.md (2026-09-07)
+and the Technology Stack table above.
 
 ---
