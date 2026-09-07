@@ -6,8 +6,13 @@ import pytest
 from memora_mini.memory import apply as apply_mod
 from memora_mini.memory import classify as classify_mod
 from memora_mini.memory import extract as extract_mod
-from memora_mini.memory.reflect import log_interaction, pending_interactions, reflect
-from memora_mini.store.namespaces import EPISODIC, FAILURE
+from memora_mini.memory.reflect import (
+    log_interaction,
+    mark_reflected,
+    pending_interactions,
+    reflect,
+)
+from memora_mini.store.namespaces import EPISODIC, FAILURE, INTERACTIONS
 
 
 @pytest.fixture(autouse=True)
@@ -153,3 +158,87 @@ def test_procedural_memory_is_never_injected_into_generation(store, monkeypatch)
 def test_extract_failure_falls_back_cleanly_on_garbage(store, monkeypatch):
     monkeypatch.setattr(extract_mod.llm, "chat", lambda *a, **k: "Sorry, I cannot do that.")
     assert extract_mod.extract_failure({"question": "q", "answer": "a", "feedback": "f"}) == []
+
+
+# --- the pending-reflection buffer ------------------------------------------
+# Not a memory namespace, but it is written, updated and consumed by the same
+# store verbs, and a leak here means an interaction is reflected twice or never.
+
+def test_log_interaction_returns_its_key_and_records_the_defaults(store):
+    key = log_interaction(store, {"question": "What is ASD?", "answer": "It depends."})
+    value = store.get(INTERACTIONS, key).value
+    assert value["question"] == "What is ASD?"
+    assert value["answer"] == "It depends."
+    assert value["status"] == "OK"       # default when the caller does not say
+    assert value["reflected"] is False   # queued, by construction
+    assert value["variants"] == [] and value["source_paths"] == []
+    assert value["created_at"]
+
+
+def test_log_interaction_preserves_the_list_fields(store):
+    key = log_interaction(store, {"question": "q", "answer": "a", "status": "THUMBDOWN",
+                                  "feedback": "you ignored dosing",
+                                  "variants": ["v1", "v2"], "source_paths": ["s.md"]})
+    value = store.get(INTERACTIONS, key).value
+    assert value["variants"] == ["v1", "v2"]
+    assert value["source_paths"] == ["s.md"]
+    assert value["feedback"] == "you ignored dosing"
+
+
+def test_log_interaction_with_an_explicit_id_upserts_instead_of_duplicating(store):
+    log_interaction(store, {"id": "fixed", "question": "first", "answer": "a"})
+    log_interaction(store, {"id": "fixed", "question": "second", "answer": "a"})
+    assert store.count(INTERACTIONS) == 1
+    assert store.get(INTERACTIONS, "fixed").value["question"] == "second"
+
+
+def test_log_interaction_gives_every_anonymous_record_its_own_key(store):
+    keys = {log_interaction(store, {"question": f"q{i}", "answer": "a"}) for i in range(5)}
+    assert len(keys) == 5
+    assert store.count(INTERACTIONS) == 5
+
+
+def test_an_empty_question_still_produces_an_embeddable_document(store):
+    key = log_interaction(store, {"question": "", "answer": "a"})
+    assert store.get(INTERACTIONS, key).value["text"] == "(empty)"
+
+
+def test_an_oversized_context_is_truncated_before_it_is_stored(store):
+    key = log_interaction(store, {"question": "q", "answer": "a", "context": "x" * 9000})
+    assert len(store.get(INTERACTIONS, key).value["context"]) == 4000
+
+
+def test_pending_interactions_carries_the_store_key_back(store):
+    key = log_interaction(store, {"question": "q", "answer": "a"})
+    pending = pending_interactions(store)
+    assert [i["_key"] for i in pending] == [key]
+    assert pending[0]["question"] == "q"
+
+
+def test_mark_reflected_drains_the_queue_without_deleting_anything(store):
+    key = log_interaction(store, {"question": "q", "answer": "a"})
+    mark_reflected(store, {"_key": key})
+
+    assert pending_interactions(store) == []
+    value = store.get(INTERACTIONS, key).value
+    assert value["reflected"] is True and value["reflected_at"]
+    assert value["question"] == "q"      # the record itself is retained
+    assert store.count(INTERACTIONS) == 1
+
+
+def test_mark_reflected_drains_only_the_named_interaction(store):
+    first = log_interaction(store, {"question": "first", "answer": "a"})
+    log_interaction(store, {"question": "second", "answer": "a"})
+    mark_reflected(store, {"_key": first})
+    assert [i["question"] for i in pending_interactions(store)] == ["second"]
+
+
+def test_a_real_reflection_run_drains_every_interaction_it_consumed(store, canned):
+    canned["episodic"] = [{"question": "What is ASD?", "answer": "Autism Spectrum Disorder."}]
+    for index in range(3):
+        log_interaction(store, {"question": f"question {index}", "answer": "a", "status": "OK"})
+    reflect(store, dry_run=False, verbose=False)
+
+    assert pending_interactions(store) == []
+    assert store.count(INTERACTIONS) == 3  # drained, not deleted
+    assert reflect(store, dry_run=False, verbose=False)["interactions"] == 0  # never reprocessed

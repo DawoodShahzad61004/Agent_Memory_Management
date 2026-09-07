@@ -51,7 +51,7 @@ row 5 for the open question.
 | `Sample_Coding_Agent/` | **Test harness.** The agent `mem_manage/` gets wired into and exercised against. Currently a single-file LangGraph chatbot inherited from the Mem0 evaluation; to be converted from a customer-support persona to a coding agent, with Mem0 replaced by `mem_manage/`. |
 | `memora_mini/` | **Prior art, working.** A native reimplementation of LangMem's memory taxonomy — supersede-not-delete lifecycle, strength-based recall with recency decay, offline extract→classify→apply consolidation. Several of its mechanisms are direct antecedents of `mem_manage/`'s. |
 | `LangMem/` | Reference material for the LangMem evaluation. Not executable. |
-| `tests/` | `pytest` suite for `memora_mini/` (58 tests, no LLM server or network required). |
+| `tests/` | `pytest` suite for `memora_mini/` (161 tests, no LLM server or network required). |
 | `docs/` | Five-file tracking system, below. |
 
 ### How this repo got here
