@@ -87,5 +87,13 @@ ENABLE_PRUNING = True
 # to be a meaningful signal.
 MIN_PRUNE_BUDGET = 2_000
 
+# --- Input Files ---------------------------------------------------------------
+# List of markdown files containing raw episodic memory event records to compact.
+# Each file path can be absolute or relative to REPO_ROOT.
+COMPACT_ARTIFACT_FILES = [
+    Path.home() / "Desktop" / "Projects" / ".bhai-artifacts" / "temp_work_repo-55fce4bb" / "shared" / "user_choices.md",
+    Path.home() / "Desktop" / "Projects" / ".bhai-artifacts" / "temp_work_repo-55fce4bb" / "shared" / "learnings.md",
+]
+
 # --- Logging --------------------------------------------------------------------
 DEFAULT_LOG_DIR = PACKAGE_ROOT / "run_logs"

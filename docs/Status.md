@@ -437,3 +437,21 @@
   updated); `graphify-out/` regenerated.
 
 ---
+
+#### 2026-09-08 — Configuration-driven input files for `compact.py` orchestrator
+
+* Modified `compact.py` to read input markdown files from `config.py::COMPACT_ARTIFACT_FILES` (a list of `Path`
+  objects) instead of accepting them via CLI arguments. Allows batch processing of multiple files without
+  command-line configuration, centralizing file paths in the configuration rather than requiring them at invocation.
+* Updated `config.py` to define `COMPACT_ARTIFACT_FILES` with example paths demonstrating absolute paths via
+  `Path.home()`. Files are processed sequentially; missing files are logged as warnings and processing continues.
+* Modified `_main()` to validate the config list is non-empty, iterate through all files, accumulate episodic records
+  and memories, and output aggregated summary statistics across all inputs. Returns proper error codes: 1 if the list
+  is empty, 1 if no memories result, 0 on success.
+* Behavior change: `_main()` no longer accepts CLI arguments; the entry point is purely config-driven. This simplifies
+  deployment in reproducible environments (orchestrator jobs, CI pipelines, artifact processing workflows) where input
+  paths are known at configuration time rather than invocation time.
+* Tracked in: `mem_manage/config.py`, `mem_manage/compact.py`; Architecture.md (Technology Stack section updated,
+  changelog entry added); Status.md (this entry).
+
+---

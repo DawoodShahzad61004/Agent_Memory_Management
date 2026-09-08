@@ -436,7 +436,7 @@ directly why the SDK approach doesn't work here (ADR-010).
 
 | Component | Technology | Notes |
 |---|---|---|
-| **`mem_manage/` core** | Pure Python, hand-written | No tool-calling, no cloud egress, deterministic mutation. Five modules: `config.py` (centralized constants, now including `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET`, ADR-031), `importance.py` (scoring), `memory.py` (record shape), `consolidate.py` (decay/prune), `compact.py` (CLI orchestrator, now with phase-level `[PARSE]`/`[SCORE]`/`[DEDUP_MERGE]`/`[CONSOLIDATE]`/`[PRUNE]`/`[OUTPUT]` logging). Services (`dedup_merge.py` — near-duplicate grouping now complete-linkage, ADR-032, with `[auto] ...` boilerplate stripped before embedding, BUG-011 — plus adapted `embedding_manager.py`/`llm_caller.py`/`llm_setup.py`/`logger_config.py`, the last now actually wired in). |
+| **`mem_manage/` core** | Pure Python, hand-written | No tool-calling, no cloud egress, deterministic mutation. Five modules: `config.py` (centralized constants, now including `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET`, ADR-031, plus `COMPACT_ARTIFACT_FILES` configuration list), `importance.py` (scoring), `memory.py` (record shape), `consolidate.py` (decay/prune), `compact.py` (orchestrator reads input files from config, not CLI; phase-level `[PARSE]`/`[SCORE]`/`[DEDUP_MERGE]`/`[CONSOLIDATE]`/`[PRUNE]`/`[OUTPUT]` logging). Services (`dedup_merge.py` — near-duplicate grouping now complete-linkage, ADR-032, with `[auto] ...` boilerplate stripped before embedding, BUG-011 — plus adapted `embedding_manager.py`/`llm_caller.py`/`llm_setup.py`/`logger_config.py`, the last now actually wired in). |
 | **Test suite** | `pytest` (161 tests total: 119 `mem_manage/`, 42 `memora_mini/`) | All passing. `mem_manage` coverage: config validation, all five importance factors, memory lifecycle, dedup/merge (all branches, including complete-linkage grouping and boilerplate-stripping), passive decay, prune (including the `ENABLE_PRUNING`/`MIN_PRUNE_BUDGET` gates), end-to-end pipeline — all numeric assumptions verified empirically. `memora_mini` coverage: full CRUD (create/read/update/delete) on all memory types, store operations, namespace isolation, every planned action's behavior, re-ranked recall, pending-interactions buffer, graph end-to-end. No LLM server or network required. |
 | Graph orchestration | LangGraph `StateGraph` (`langgraph==1.2.9`) | `memora_mini` (five nodes, one conditional edge) and `Sample_Coding_Agent` (one self-looping node) |
 | Memory extraction/classification | Hand-written `memory/extract.py` + `memory/classify.py` | Plain-JSON prompts + `json_fix.py` repair; no tool-calling, no `trustcall` |
@@ -637,5 +637,9 @@ code changes were needed to the core `memora_mini` modules; the new tests docume
 
 Updated README.md (test count from 58 to 161) and regenerated the knowledge graph. Tracked in Status.md (2026-09-07)
 and the Technology Stack table above.
+
+### 2026-09-08 — Configuration-driven input files for `compact.py`
+
+`config.py` now defines `COMPACT_ARTIFACT_FILES` — a list of `Path` objects pointing to markdown files containing raw episodic memory records. `compact.py` reads from this config list instead of accepting input paths via CLI arguments, allowing batch processing of multiple files without command-line configuration. The orchestrator processes all files in the list, accumulating episodic records and memories from each, then outputs aggregated summary statistics. Graceful handling for missing files (logged as warnings but processing continues). `_main()` validates the config list is non-empty and returns proper error codes if processing yields no memories.
 
 ---

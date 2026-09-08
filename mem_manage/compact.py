@@ -14,6 +14,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from .config import COMPACT_ARTIFACT_FILES
 from .consolidate import refresh_decay, rerank_and_prune
 from .importance import parse_episodic_md
 from .memory import DurableMemory, build_durable_memories
@@ -75,16 +76,37 @@ def compact_markdown_file(path: str | Path, **kwargs) -> list[DurableMemory]:
 
 def _main(argv: list[str]) -> int:
     setup_logging()
-    if len(argv) != 2:
-        print("usage: python -m mem_manage.compact <episodic-log.md>", file=sys.stderr)
-        return 2
-    text = Path(argv[1]).read_text(encoding="utf-8")
-    record_count = len(parse_episodic_md(text))
-    memories = compact_markdown(text)
-    logger.debug("%d episodic record(s) -> %d durable memory(ies)", record_count, len(memories))
-    print(f"{record_count} episodic record(s) -> {len(memories)} durable memory(ies)")
-    logger.info("[OUTPUT] input: %d durable memory(ies), ranked by importance", len(memories))
-    for memory in memories:
+    if not COMPACT_ARTIFACT_FILES:
+        print("error: COMPACT_ARTIFACT_FILES is empty in config.py", file=sys.stderr)
+        return 1
+
+    total_record_count = 0
+    total_memory_count = 0
+    all_memories = []
+
+    for file_path in COMPACT_ARTIFACT_FILES:
+        path = Path(file_path)
+        if not path.exists():
+            logger.warning("input file not found: %s", path)
+            continue
+
+        logger.info("processing file: %s", path)
+        text = path.read_text(encoding="utf-8")
+        record_count = len(parse_episodic_md(text))
+        memories = compact_markdown(text)
+        total_record_count += record_count
+        total_memory_count += len(memories)
+        all_memories.extend(memories)
+        logger.debug("%d episodic record(s) -> %d durable memory(ies) from %s",
+                    record_count, len(memories), path.name)
+
+    if not all_memories:
+        print("no memories to output", file=sys.stderr)
+        return 1
+
+    print(f"{total_record_count} episodic record(s) -> {total_memory_count} durable memory(ies)")
+    logger.info("[OUTPUT] input: %d durable memory(ies), ranked by importance", len(all_memories))
+    for memory in all_memories:
         merged_note = (
             f" (merged from {len(memory.merged_from)})" if len(memory.merged_from) > 1 else ""
         )
@@ -102,7 +124,7 @@ def _main(argv: list[str]) -> int:
             memory.content,
         )
         print(f"  [{memory.importance:.3f}] {memory.tag}{merged_note}: {memory.content[:80]!r}")
-    logger.info("[OUTPUT] output: %d entries formatted as markdown", len(memories))
+    logger.info("[OUTPUT] output: %d entries formatted as markdown", len(all_memories))
     return 0
 
 
